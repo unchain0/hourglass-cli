@@ -243,6 +243,22 @@ hourglass schedule privileges --json
 hourglass schedule check-rules --json
 ```
 
+### Programação de carrinho por planilha
+
+O modelo fica em `docs/carrinho-modelo.csv`, com as colunas `local,data,inicio,fim,publicador1,publicador2`.
+Datas aceitam `dd/mm/aaaa` ou `aaaa-mm-dd`; horários usam `hh:mm`; `publicador2` é opcional.
+
+```bash
+hourglass schedule cart import --file docs/carrinho-modelo.csv
+```
+
+O comando lê os locais, os publicadores e a programação existente direto do Hourglass e devolve um JSON com:
+
+- `entries`: uma linha por publicador, com `LocationID`, `Datetime` em UTC, `DurationHours` e `PublisherID` já resolvidos;
+- `problems`: local inexistente ou desativado, nome ambíguo, data ou horário inválido, linha repetida, horário já ocupado no local e publicador escalado em dois lugares ao mesmo tempo.
+
+Qualquer problema bloqueia a importação, e nada é gravado. A gravação em si ainda não está habilitada: o endpoint de escrita da programação de testemunho público não está confirmado, e o comando responde com erro explícito quando recebe `--apply`.
+
 Protected assignee swap (AV slot only; never publish/notify/send):
 
 ```bash

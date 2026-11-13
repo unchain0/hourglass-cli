@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"hourglass-rejections-rpa/src/integrations/auth/webauthn"
+	"hourglass-rejections-rpa/src/services/cartimport"
 	"hourglass-rejections-rpa/src/services/hourglass"
 
 	_ "github.com/glebarez/go-sqlite"
@@ -896,6 +897,8 @@ func (c *CLI) runUsers(args []string) error {
 
 type scheduleArgs struct {
 	subcommand string
+	action     string
+	file       string
 	fromDate   string
 	toDate     string
 	lgroup     int
@@ -907,9 +910,20 @@ func parseScheduleArgs(args []string) (scheduleArgs, error) {
 	var parsed scheduleArgs
 	for i := 0; i < len(args); {
 		switch args[i] {
-		case "wm", "privileges", "assign", "unassign", "check-rules", "mm", "av", "notifications":
+		case "wm", "privileges", "assign", "unassign", "check-rules", "mm", "av", "notifications", "cart":
 			parsed.subcommand = args[i]
 			i++
+			if parsed.subcommand == "cart" && i < len(args) && !strings.HasPrefix(args[i], "--") {
+				parsed.action = args[i]
+				i++
+			}
+		case "--file":
+			val, next, err := takeFlagValue(args, i, "--file")
+			if err != nil {
+				return parsed, err
+			}
+			parsed.file = val
+			i = next
 		case "--from":
 			val, next, err := takeFlagValue(args, i, "--from")
 			if err != nil {
@@ -989,6 +1003,8 @@ func (c *CLI) dispatchSchedule(parsed scheduleArgs) error {
 		return c.runScheduleAV(parsed)
 	case "notifications":
 		return c.runScheduleNotifications(parsed)
+	case "cart":
+		return c.runCartSchedule(parsed)
 	default:
 		fmt.Fprintf(c.stderr, "Usage: hourglass schedule <wm|privileges|assign|unassign|check-rules|mm|av|notifications> [flags]\n")
 		return errors.New("unknown schedule subcommand")
@@ -1016,6 +1032,91 @@ func (c *CLI) runScheduleAV(parsed scheduleArgs) error {
 		return errors.New("missing required flags")
 	}
 	return c.ScheduleAVAttendants(parsed.fromDate, parsed.toDate)
+}
+
+// ImportCartSchedule validates a public witnessing spreadsheet and prints the
+// slots it would create. It never writes to Hourglass.
+func (c *CLI) ImportCartSchedule(file string, apply bool) error {
+	if file == "" {
+		return exitCode2("missing --file with the spreadsheet path")
+	}
+	source, err := os.Open(file)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = source.Close() }()
+
+	rows, err := cartimport.Parse(source)
+	if err != nil {
+		return err
+	}
+	start, end := rows[0].Date, rows[0].Date
+	for _, row := range rows {
+		if row.Date.Before(start) {
+			start = row.Date
+		}
+		if row.Date.After(end) {
+			end = row.Date
+		}
+	}
+
+	locations, err := c.client.GetPWLocations()
+	if err != nil {
+		return err
+	}
+	users, err := c.client.GetUsers()
+	if err != nil {
+		return err
+	}
+	existing, err := c.client.GetPWSchedule(start.Format(time.DateOnly), end.Format(time.DateOnly))
+	if err != nil {
+		return err
+	}
+
+	plan := cartimport.Build(rows, locations, users, existing)
+	if err := c.printCartPlan(plan, apply); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *CLI) printCartPlan(plan cartimport.Plan, apply bool) error {
+	problems := make([]string, 0, len(plan.Problems))
+	for _, problem := range plan.Problems {
+		problems = append(problems, problem.String())
+	}
+	result := map[string]any{
+		"entries":  plan.Entries,
+		"problems": problems,
+		"applied":  false,
+	}
+	if err := marshalJSONTo(c.stdout, result); err != nil {
+		return err
+	}
+	if len(plan.Problems) > 0 {
+		return fmt.Errorf("planilha com %d problema(s); nada será gravado", len(plan.Problems))
+	}
+	if apply {
+		return errors.New("gravação ainda não habilitada: contrato de escrita do Hourglass não confirmado")
+	}
+	return nil
+}
+
+func marshalJSONTo(w io.Writer, value any) error {
+	encoded, err := marshalJSON(value)
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(append(encoded, '\n'))
+	return err
+}
+
+func (c *CLI) runCartSchedule(parsed scheduleArgs) error {
+	if parsed.action != "import" {
+		fmt.Fprintf(c.stderr, "Usage: hourglass schedule cart import --file <planilha.csv> [--apply] --json\n")
+		return errors.New("unknown cart subcommand")
+	}
+	return c.ImportCartSchedule(parsed.file, parsed.apply)
 }
 
 func (c *CLI) runScheduleNotifications(parsed scheduleArgs) error {
