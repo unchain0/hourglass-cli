@@ -8,60 +8,42 @@ import (
 	"hourglass-rejections-rpa/src/services/hourglass"
 )
 
-// CopyMonth maps every slot of a source month into the target month, keeping the
-// weekday and the time of day. A slot on the 2nd Thursday becomes the 2nd
-// Thursday of the target month, and so on.
+type slotTemplate struct {
+	hour      int
+	minute    int
+	location  int
+	duration  string
+	publisher int
+}
+
+// CopyMonth repeats one representative week of the source month across the whole
+// target month. For each weekday it uses the most recent source date, which is
+// the roster currently in force, and applies it to every matching weekday of the
+// target month.
 func CopyMonth(source []hourglass.PWSlot, target time.Time, existing []hourglass.PWSlot) Plan {
 	var plan Plan
+	week := latestWeek(source, &plan)
 	// A slot is identified by location, instant and publisher, so two publishers
 	// sharing a location hour stay independent and a re-run stays idempotent.
 	taken := make(map[string]struct{}, len(existing))
 	for _, slot := range existing {
 		taken[slotKey(slot.LocationID, normalize(slot.Datetime))+fmt.Sprintf("|%d", assignee(slot))] = struct{}{}
 	}
-	seen := make(map[string]struct{}, len(source))
-	busy := make(map[string]struct{}, len(source))
 
-	for _, slot := range source {
-		at, err := time.Parse(time.RFC3339, slot.Datetime)
-		if err != nil {
-			plan.Problems = append(plan.Problems, Problem{0, fmt.Sprintf("horário inválido na origem: %q", slot.Datetime)})
-			continue
-		}
-		day, ok := sameWeekdayOrdinal(at, target)
-		if !ok {
-			plan.Problems = append(plan.Problems, Problem{0, fmt.Sprintf(
-				"%s não tem a mesma semana de %s para replicar %s",
-				target.Format("01/2006"), at.Format("02/01/2006"), at.Format("02/01/2006"))})
-			continue
-		}
-		datetime := time.Date(day.Year(), day.Month(), day.Day(), at.Hour(), at.Minute(), 0, 0, time.UTC)
-		when := datetime.Format(time.RFC3339)
-		key := slotKey(slot.LocationID, when) + fmt.Sprintf("|%d", assignee(slot))
-		if _, duplicate := seen[key]; duplicate {
-			continue
-		}
-		seen[key] = struct{}{}
-		if slot.AssigneeID != nil {
-			publisherKey := fmt.Sprintf("%d|%s", *slot.AssigneeID, when)
-			if _, clash := busy[publisherKey]; clash {
-				plan.Problems = append(plan.Problems, Problem{0, fmt.Sprintf(
-					"publicador %d ficaria em dois locais em %s", *slot.AssigneeID, datetime.Format("02/01/2006 15:04"))})
-				continue
-			}
-			busy[publisherKey] = struct{}{}
-		}
-		if _, exists := taken[key]; exists {
-			continue
-		}
-		entry := Entry{
-			LocationID:    slot.LocationID,
-			Datetime:      datetime,
-			DurationHours: durationHours(slot.Duration),
-			PublisherID:   assignee(slot),
-		}
-		plan.Entries = append(plan.Entries, entry)
+	first := time.Date(target.Year(), target.Month(), 1, 0, 0, 0, 0, time.UTC)
+	days := daysInMonth(first)
+	state := emitState{
+		seen:  make(map[string]struct{}, len(source)*2),
+		busy:  make(map[string]struct{}, len(source)*2),
+		taken: taken,
 	}
+	for day := 0; day < days; day++ {
+		date := first.AddDate(0, 0, day)
+		for _, template := range week[date.Weekday()] {
+			state.emit(&plan, date, template)
+		}
+	}
+
 	sort.SliceStable(plan.Entries, func(i, j int) bool {
 		if plan.Entries[i].Datetime.Equal(plan.Entries[j].Datetime) {
 			return plan.Entries[i].LocationID < plan.Entries[j].LocationID
@@ -69,6 +51,74 @@ func CopyMonth(source []hourglass.PWSlot, target time.Time, existing []hourglass
 		return plan.Entries[i].Datetime.Before(plan.Entries[j].Datetime)
 	})
 	return plan
+}
+
+// latestWeek keeps only the slots of the most recent date of each weekday.
+func latestWeek(source []hourglass.PWSlot, plan *Plan) map[time.Weekday][]slotTemplate {
+	latest := make(map[time.Weekday]time.Time, 7)
+	week := make(map[time.Weekday][]slotTemplate, 7)
+	for _, slot := range source {
+		at, err := time.Parse(time.RFC3339, slot.Datetime)
+		if err != nil {
+			plan.Problems = append(plan.Problems, Problem{0, fmt.Sprintf("horário inválido na origem: %q", slot.Datetime)})
+			continue
+		}
+		day := time.Date(at.Year(), at.Month(), at.Day(), 0, 0, 0, 0, time.UTC)
+		weekday := at.Weekday()
+		if day.After(latest[weekday]) {
+			latest[weekday] = day
+			week[weekday] = nil
+		}
+		if !day.Equal(latest[weekday]) {
+			continue
+		}
+		week[weekday] = append(week[weekday], slotTemplate{
+			hour:      at.Hour(),
+			minute:    at.Minute(),
+			location:  slot.LocationID,
+			duration:  slot.Duration,
+			publisher: assignee(slot),
+		})
+	}
+	return week
+}
+
+type emitState struct {
+	seen  map[string]struct{}
+	busy  map[string]struct{}
+	taken map[string]struct{}
+}
+
+func (s emitState) emit(plan *Plan, date time.Time, template slotTemplate) {
+	datetime := time.Date(date.Year(), date.Month(), date.Day(), template.hour, template.minute, 0, 0, time.UTC)
+	when := datetime.Format(time.RFC3339)
+	key := slotKey(template.location, when) + fmt.Sprintf("|%d", template.publisher)
+	if _, duplicate := s.seen[key]; duplicate {
+		return
+	}
+	s.seen[key] = struct{}{}
+	if template.publisher != 0 {
+		publisherKey := fmt.Sprintf("%d|%s", template.publisher, when)
+		if _, clash := s.busy[publisherKey]; clash {
+			plan.Problems = append(plan.Problems, Problem{0, fmt.Sprintf(
+				"publicador %d ficaria em dois locais em %s", template.publisher, datetime.Format("02/01/2006 15:04"))})
+			return
+		}
+		s.busy[publisherKey] = struct{}{}
+	}
+	if _, exists := s.taken[key]; exists {
+		return
+	}
+	plan.Entries = append(plan.Entries, Entry{
+		LocationID:    template.location,
+		Datetime:      datetime,
+		DurationHours: durationHours(template.duration),
+		PublisherID:   template.publisher,
+	})
+}
+
+func daysInMonth(first time.Time) int {
+	return time.Date(first.Year(), first.Month()+1, 1, 0, 0, 0, 0, time.UTC).AddDate(0, 0, -1).Day()
 }
 
 func assignee(slot hourglass.PWSlot) int {
@@ -92,17 +142,4 @@ func normalize(datetime string) string {
 		return datetime
 	}
 	return at.UTC().Format(time.RFC3339)
-}
-
-// sameWeekdayOrdinal returns the date in target with the same weekday and the
-// same occurrence number (1st..5th) as the source date.
-func sameWeekdayOrdinal(source, target time.Time) (time.Time, bool) {
-	ordinal := (source.Day()-1)/7 + 1
-	first := time.Date(target.Year(), target.Month(), 1, 0, 0, 0, 0, time.UTC)
-	offset := (int(source.Weekday()) - int(first.Weekday()) + 7) % 7
-	day := first.AddDate(0, 0, offset+7*(ordinal-1))
-	if day.Month() != target.Month() {
-		return time.Time{}, false
-	}
-	return day, true
 }

@@ -249,7 +249,7 @@ hourglass schedule check-rules --json
 hourglass schedule cart copy --from 2026-11 --to 2026-12
 ```
 
-Cada designação de novembro é replicada em dezembro mantendo o dia da semana e o horário: a 2ª quinta-feira das 08:00 continua sendo a 2ª quinta-feira das 08:00. O comando devolve `entries` com `LocationID`, `Datetime`, `DurationHours` e `PublisherID`, e lista em `problems` os casos que exigem decisão: mês de destino sem a 5ª semana correspondente, horário já ocupado no local e publicador em dois locais ao mesmo tempo.
+O comando usa a semana mais recente de novembro como molde: para cada dia da semana ele pega a última data com movimento e repete essa escala em todas as datas equivalentes de dezembro. Assim dezembro começa no dia 1 e termina no dia 31 com a mesma carga diária de novembro. O resultado traz `entries` com `LocationID`, `Datetime`, `DurationHours` e `PublisherID`, e `problems` quando o molde tem um publicador em dois locais no mesmo horário.
 
 A gravação usa `PUT /scheduling/pw/schedule?locID=<id>` com uma designação por chamada e só acontece com `HOURGLASS_ALLOW_CART=1`:
 
