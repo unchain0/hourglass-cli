@@ -119,8 +119,8 @@ func TestClient_GetUsers(t *testing.T) {
 		{
 			ID:         31944,
 			Firstname:  "João",
-			Lastname:   "Silva",
-			Descriptor: "João Silva",
+			Lastname:   "Exemplo A",
+			Descriptor: "Pessoa Exemplo A",
 			Appt:       "Elder",
 		},
 		{

@@ -131,7 +131,7 @@ func TestAPIAnalyzer_AnalyzeAllSections(t *testing.T) {
 
 func TestAPIAnalyzer_GetUserName(t *testing.T) {
 	users := []User{
-		{ID: 1, Firstname: "João", Lastname: "Silva", Descriptor: "João Silva"},
+		{ID: 1, Firstname: "Pessoa", Lastname: "Exemplo A", Descriptor: "Pessoa Exemplo A"},
 		{ID: 2, Firstname: "Maria", Lastname: "Santos"}, // No descriptor
 	}
 
@@ -149,7 +149,7 @@ func TestAPIAnalyzer_GetUserName(t *testing.T) {
 
 	// Test getUserName
 	name1 := analyzer.getUserName(1)
-	assert.Equal(t, "João Silva", name1)
+	assert.Equal(t, "Pessoa Exemplo A", name1)
 
 	name2 := analyzer.getUserName(2)
 	assert.Equal(t, "Maria Santos", name2)
@@ -281,7 +281,7 @@ func TestAPIAnalyzer_PortugueseSectionNames(t *testing.T) {
 
 func TestAPIAnalyzer_MultipleDeclined(t *testing.T) {
 	users := []User{
-		{ID: 1, Firstname: "João", Lastname: "Silva", Descriptor: "João Silva"},
+		{ID: 1, Firstname: "Pessoa", Lastname: "Exemplo A", Descriptor: "Pessoa Exemplo A"},
 		{ID: 2, Firstname: "Maria", Lastname: "Santos", Descriptor: "Maria Santos"},
 	}
 
@@ -341,14 +341,14 @@ func TestAPIAnalyzer_MultipleDeclined(t *testing.T) {
 	require.NoError(t, result.Error)
 	assert.Equal(t, 2, result.Total)
 	assert.Len(t, result.Rejections, 2)
-	assert.Equal(t, "João Silva", result.Rejections[0].Who)
+	assert.Equal(t, "Pessoa Exemplo A", result.Rejections[0].Who)
 	assert.Equal(t, "Maria Santos", result.Rejections[1].Who)
 	assert.Equal(t, "2026-03-01", result.Rejections[0].When)
 	assert.Equal(t, "2026-03-02", result.Rejections[1].When)
 }
 
 func TestAPIAnalyzer_AnalyzeMidweekMeetings(t *testing.T) {
-	users := []User{{ID: 1, Firstname: "João", Lastname: "Silva", Descriptor: "João Silva"}}
+	users := []User{{ID: 1, Firstname: "Pessoa", Lastname: "Exemplo A", Descriptor: "Pessoa Exemplo A"}}
 
 	// Create meetings with parts
 	meetings := []Meeting{{
@@ -489,7 +489,7 @@ func TestAPIAnalyzer_AnalyzeMidweekMeetings_GetMeetingsError(t *testing.T) {
 }
 
 func TestAPIAnalyzer_AnalyzeMidweekMeetings_FallbackFlagName(t *testing.T) {
-	users := []User{{ID: 1, Firstname: "João", Lastname: "Silva", Descriptor: "João Silva"}}
+	users := []User{{ID: 1, Firstname: "Pessoa", Lastname: "Exemplo A", Descriptor: "Pessoa Exemplo A"}}
 
 	// Create meetings without the part ID
 	meetings := []Meeting{{TGW: []MeetingPart{{ID: 999, Title: "Some Other Part"}}}}
@@ -536,7 +536,7 @@ func TestAPIAnalyzer_AnalyzeMidweekMeetings_FallbackFlagName(t *testing.T) {
 
 func TestAPIAnalyzer_Deduplication(t *testing.T) {
 	users := []User{
-		{ID: 1, Firstname: "Naraiana", Lastname: "Pacheco", Descriptor: "Naraiana Pacheco"},
+		{ID: 1, Firstname: "Pessoa", Lastname: "Exemplo B", Descriptor: "Pessoa Exemplo B"},
 	}
 
 	notifications := []Notification{
@@ -585,7 +585,7 @@ func TestAPIAnalyzer_Deduplication(t *testing.T) {
 	require.NoError(t, result.Error)
 	assert.Equal(t, 1, result.Total, "should deduplicate identical rejections")
 	assert.Len(t, result.Rejections, 1)
-	assert.Equal(t, "Naraiana Pacheco", result.Rejections[0].Who)
+	assert.Equal(t, "Pessoa Exemplo B", result.Rejections[0].Who)
 	assert.Equal(t, "Public Witnessing", result.Rejections[0].What)
 	assert.Equal(t, "2026-03-13", result.Rejections[0].When)
 }

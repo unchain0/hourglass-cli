@@ -10,7 +10,7 @@ import (
 
 func TestParseReadsBrazilianDatesAndOptionalSecondPublisher(t *testing.T) {
 	source := "local,data,inicio,fim,publicador1,publicador2\r\n" +
-		"PSF - Barreira,02/12/2026,08:00,10:00,João Silva,\r\n"
+		"Local Exemplo 1,02/12/2026,08:00,10:00,Pessoa Exemplo A,\r\n"
 
 	rows, err := Parse(strings.NewReader(source))
 	if err != nil {
@@ -20,10 +20,10 @@ func TestParseReadsBrazilianDatesAndOptionalSecondPublisher(t *testing.T) {
 		t.Fatalf("expected 1 row, got %d", len(rows))
 	}
 	row := rows[0]
-	if row.Location != "PSF - Barreira" || row.Start != "08:00" || row.End != "10:00" {
+	if row.Location != "Local Exemplo 1" || row.Start != "08:00" || row.End != "10:00" {
 		t.Fatalf("unexpected row: %+v", row)
 	}
-	if row.Publisher1 != "João Silva" || row.Publisher2 != "" {
+	if row.Publisher1 != "Pessoa Exemplo A" || row.Publisher2 != "" {
 		t.Fatalf("unexpected publishers: %+v", row)
 	}
 	if got := row.Date.Format(time.DateOnly); got != "2026-12-02" {
@@ -33,7 +33,7 @@ func TestParseReadsBrazilianDatesAndOptionalSecondPublisher(t *testing.T) {
 
 func TestParseAcceptsBOMAndIsoDates(t *testing.T) {
 	source := "\ufeffLocal,Data,Inicio,Fim,Publicador1,Publicador2\n" +
-		"Praça,2026-12-05,09:00,11:00,Ana,Beatriz\n"
+		"Local Exemplo 2,2026-12-05,09:00,11:00,Pessoa Exemplo A,Pessoa Exemplo B\n"
 
 	rows, err := Parse(strings.NewReader(source))
 	if err != nil {
@@ -46,10 +46,10 @@ func TestParseAcceptsBOMAndIsoDates(t *testing.T) {
 
 func TestParseReportsInvalidLinesTogether(t *testing.T) {
 	source := "local,data,inicio,fim,publicador1,publicador2\n" +
-		"Praça,31/02/2026,09:00,11:00,Ana,\n" +
-		"Praça,02/12/2026,9h,11:00,Ana,\n" +
-		"Praça,02/12/2026,11:00,09:00,Ana,\n" +
-		"Praça,02/12/2026,09:00,11:00,,\n"
+		"Local Exemplo 2,31/02/2026,09:00,11:00,Pessoa Exemplo A,\n" +
+		"Local Exemplo 2,02/12/2026,9h,11:00,Pessoa Exemplo A,\n" +
+		"Local Exemplo 2,02/12/2026,11:00,09:00,Pessoa Exemplo A,\n" +
+		"Local Exemplo 2,02/12/2026,09:00,11:00,,\n"
 
 	_, err := Parse(strings.NewReader(source))
 	if err == nil {
@@ -63,7 +63,7 @@ func TestParseReportsInvalidLinesTogether(t *testing.T) {
 }
 
 func TestParseRejectsWrongHeader(t *testing.T) {
-	_, err := Parse(strings.NewReader("local,dia,inicio\nPraça,02/12/2026,09:00\n"))
+	_, err := Parse(strings.NewReader("local,dia,inicio\nLocal Exemplo 2,02/12/2026,09:00\n"))
 	if err == nil || !strings.Contains(err.Error(), "cabeçalho") {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -71,14 +71,14 @@ func TestParseRejectsWrongHeader(t *testing.T) {
 
 func fixture() ([]hourglass.PWLocation, []hourglass.User) {
 	locations := []hourglass.PWLocation{
-		{ID: 1, Name: "PSF - Barreira"},
-		{ID: 2, Name: "Praça"},
+		{ID: 1, Name: "Local Exemplo 1"},
+		{ID: 2, Name: "Local Exemplo 2"},
 		{ID: 3, Name: "Fechado", Disabled: true},
 	}
 	users := []hourglass.User{
-		{ID: 10, Firstname: "João", Lastname: "Silva", Descriptor: "João Silva"},
-		{ID: 11, Firstname: "Ana", Lastname: "Souza", Descriptor: "Ana Souza"},
-		{ID: 12, Firstname: "Beatriz", Lastname: "Lima", Descriptor: "Beatriz Lima"},
+		{ID: 10, Firstname: "Pessoa", Lastname: "Exemplo A", Descriptor: "Pessoa Exemplo A"},
+		{ID: 11, Firstname: "Pessoa", Lastname: "Exemplo B", Descriptor: "Pessoa Exemplo B"},
+		{ID: 12, Firstname: "Pessoa", Lastname: "Exemplo C", Descriptor: "Pessoa Exemplo C"},
 	}
 	return locations, users
 }
@@ -90,7 +90,7 @@ func row(line int, location, date, start, end, first, second string) Row {
 
 func TestBuildResolvesPublishersAndComputesDuration(t *testing.T) {
 	locations, users := fixture()
-	plan := Build([]Row{row(2, "Praça", "02/12/2026", "08:00", "10:00", "Ana Souza", "Beatriz Lima")}, locations, users, nil)
+	plan := Build([]Row{row(2, "Local Exemplo 2", "02/12/2026", "08:00", "10:00", "Pessoa Exemplo B", "Pessoa Exemplo C")}, locations, users, nil)
 
 	if !plan.OK() {
 		t.Fatalf("unexpected problems: %v", plan.Problems)
@@ -110,11 +110,11 @@ func TestBuildResolvesPublishersAndComputesDuration(t *testing.T) {
 
 func TestBuildRejectsUnknownDisabledAndAmbiguousNames(t *testing.T) {
 	locations, users := fixture()
-	users = append(users, hourglass.User{ID: 13, Firstname: "Ana", Lastname: "Lima", Descriptor: "Ana Lima"})
+	users = append(users, hourglass.User{ID: 13, Firstname: "Pessoa", Lastname: "Exemplo D", Descriptor: "Pessoa Exemplo D"})
 	plan := Build([]Row{
-		row(2, "Inexistente", "02/12/2026", "08:00", "10:00", "Ana Souza", ""),
-		row(3, "Fechado", "02/12/2026", "08:00", "10:00", "Ana Souza", ""),
-		row(4, "Praça", "02/12/2026", "08:00", "10:00", "Ninguém Aqui", ""),
+		row(2, "Inexistente", "02/12/2026", "08:00", "10:00", "Pessoa Exemplo B", ""),
+		row(3, "Fechado", "02/12/2026", "08:00", "10:00", "Pessoa Exemplo B", ""),
+		row(4, "Local Exemplo 2", "02/12/2026", "08:00", "10:00", "Pessoa Inexistente", ""),
 	}, locations, users, nil)
 
 	if plan.OK() {
@@ -129,9 +129,9 @@ func TestBuildBlocksDuplicatesExistingSlotsAndDoubleBooking(t *testing.T) {
 	locations, users := fixture()
 	existing := []hourglass.PWSlot{{ID: 99, LocationID: 2, Datetime: "2026-12-02T08:00:00Z", Duration: "2.00"}}
 	plan := Build([]Row{
-		row(2, "Praça", "02/12/2026", "08:00", "10:00", "Ana Souza", ""),
-		row(3, "Praça", "03/12/2026", "08:00", "10:00", "Ana Souza", "Ana Souza"),
-		row(4, "PSF - Barreira", "03/12/2026", "08:00", "10:00", "Ana Souza", ""),
+		row(2, "Local Exemplo 2", "02/12/2026", "08:00", "10:00", "Pessoa Exemplo B", ""),
+		row(3, "Local Exemplo 2", "03/12/2026", "08:00", "10:00", "Pessoa Exemplo B", "Pessoa Exemplo B"),
+		row(4, "Local Exemplo 1", "03/12/2026", "08:00", "10:00", "Pessoa Exemplo B", ""),
 	}, locations, users, existing)
 
 	messages := make([]string, 0, len(plan.Problems))
@@ -152,7 +152,7 @@ func TestBuildBlocksDuplicatesExistingSlotsAndDoubleBooking(t *testing.T) {
 func TestParseSkipsBlankLinesAndAcceptsClockVariants(t *testing.T) {
 	source := "local,data,inicio,fim,publicador1,publicador2\n" +
 		",,,,,\n" +
-		"Praça,2026-12-05,09h00,11h00,Ana Souza,\n"
+		"Local Exemplo 2,2026-12-05,09h00,11h00,Pessoa Exemplo B,\n"
 
 	rows, err := Parse(strings.NewReader(source))
 	if err != nil {
@@ -186,21 +186,21 @@ func TestProblemStringWithoutLineOmitsPrefix(t *testing.T) {
 
 func TestBuildUsesFullNameWhenDescriptorIsEmpty(t *testing.T) {
 	locations, users := fixture()
-	users = append(users, hourglass.User{ID: 14, Firstname: "Carlos", Lastname: "Pereira"})
-	plan := Build([]Row{row(2, "Praça", "02/12/2026", "08:00", "10:00", "Carlos Pereira", "")}, locations, users, nil)
+	users = append(users, hourglass.User{ID: 14, Firstname: "Pessoa", Lastname: "Exemplo E"})
+	plan := Build([]Row{row(2, "Local Exemplo 2", "02/12/2026", "08:00", "10:00", "Pessoa Exemplo E", "")}, locations, users, nil)
 
 	if !plan.OK() || len(plan.Entries) != 1 {
 		t.Fatalf("unexpected plan: %+v", plan)
 	}
-	if plan.Entries[0].PublisherID != 14 || plan.Entries[0].PublisherName != "Carlos Pereira" {
+	if plan.Entries[0].PublisherID != 14 || plan.Entries[0].PublisherName != "Pessoa Exemplo E" {
 		t.Fatalf("unexpected entry: %+v", plan.Entries[0])
 	}
 }
 
 func TestBuildReportsAmbiguousLocations(t *testing.T) {
-	locations := []hourglass.PWLocation{{ID: 1, Name: "Praça"}, {ID: 2, Name: "praça"}}
+	locations := []hourglass.PWLocation{{ID: 1, Name: "Local Exemplo 2"}, {ID: 2, Name: "local exemplo 2"}}
 	_, users := fixture()
-	plan := Build([]Row{row(2, "PRAÇA", "02/12/2026", "08:00", "10:00", "Ana Souza", "")}, locations, users, nil)
+	plan := Build([]Row{row(2, "LOCAL EXEMPLO 2", "02/12/2026", "08:00", "10:00", "Pessoa Exemplo B", "")}, locations, users, nil)
 
 	if plan.OK() || !strings.Contains(strings.Join(problemTexts(plan), "\n"), "ambíguo") {
 		t.Fatalf("unexpected plan: %+v", plan)
@@ -216,7 +216,7 @@ func problemTexts(plan Plan) []string {
 }
 
 func TestParseReportsMalformedCSV(t *testing.T) {
-	source := "local,data,inicio,fim,publicador1,publicador2\n\"Praça,02/12/2026,08:00,10:00,Ana Souza,\n"
+	source := "local,data,inicio,fim,publicador1,publicador2\n\"Local Exemplo 2,02/12/2026,08:00,10:00,Pessoa Exemplo B,\n"
 	if _, err := Parse(strings.NewReader(source)); err == nil || !strings.Contains(err.Error(), "planilha inválida") {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -224,7 +224,7 @@ func TestParseReportsMalformedCSV(t *testing.T) {
 
 func TestBuildMatchesDescriptorCaseInsensitively(t *testing.T) {
 	locations, users := fixture()
-	plan := Build([]Row{row(2, "Praça", "05/12/2026", "08:00", "10:00", "ana souza", "BEATRIZ LIMA")}, locations, users, nil)
+	plan := Build([]Row{row(2, "Local Exemplo 2", "05/12/2026", "08:00", "10:00", "pessoa exemplo b", "PESSOA EXEMPLO C")}, locations, users, nil)
 
 	if !plan.OK() || len(plan.Entries) != 2 {
 		t.Fatalf("unexpected plan: %+v", plan)
