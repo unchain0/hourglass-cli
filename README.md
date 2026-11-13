@@ -251,7 +251,13 @@ hourglass schedule cart copy --from 2026-11 --to 2026-12
 
 Cada designação de novembro é replicada em dezembro mantendo o dia da semana e o horário: a 2ª quinta-feira das 08:00 continua sendo a 2ª quinta-feira das 08:00. O comando devolve `entries` com `LocationID`, `Datetime`, `DurationHours` e `PublisherID`, e lista em `problems` os casos que exigem decisão: mês de destino sem a 5ª semana correspondente, horário já ocupado no local e publicador em dois locais ao mesmo tempo.
 
-A gravação (`--apply`) segue desabilitada porque o endpoint de escrita recusa o payload com HTTP 400.
+A gravação usa `PUT /scheduling/pw/schedule?locID=<id>` com uma designação por chamada e só acontece com `HOURGLASS_ALLOW_CART=1`:
+
+```bash
+HOURGLASS_ALLOW_CART=1 hourglass schedule cart copy --from 2026-11 --to 2026-12 --apply
+```
+
+Sem essa variável, todo PUT continua bloqueado. O comando grava na ordem do plano, para no primeiro erro e relê o mês para confirmar quantas designações ficaram. Ele não chama nenhum endpoint de envio, então nenhuma notificação é disparada.
 
 ### Programação de carrinho por planilha
 

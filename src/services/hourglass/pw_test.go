@@ -1,6 +1,7 @@
 package hourglass
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -64,5 +65,52 @@ func TestGetPWEndpointsReportNon200WithoutLeakingBody(t *testing.T) {
 
 	if _, err := client.GetPWLocations(); err == nil {
 		t.Fatal("expected error for non-200 response")
+	}
+}
+
+func TestUpsertPWSlotPutsOneDraftPerLocation(t *testing.T) {
+	var body map[string]any
+	var query, method string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method, query = r.Method, r.URL.RawQuery
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		_, _ = w.Write([]byte(`{"id":77,"location_id":10,"datetime":"2026-12-03T08:00:00Z","duration":"2.00","assignee_id":5,"notes":""}`))
+	}))
+	defer server.Close()
+
+	client := NewClient()
+	client.SetBaseURL(server.URL)
+	publisher := 5
+	saved, err := client.UpsertPWSlot(PWSlotDraft{
+		LocationID: 10,
+		Datetime:   "2026-12-03T08:00:00Z",
+		Duration:   "2.00",
+		AssigneeID: &publisher,
+	})
+	if err != nil {
+		t.Fatalf("UpsertPWSlot: %v", err)
+	}
+	if saved.ID != 77 || saved.LocationID != 10 {
+		t.Fatalf("unexpected slot: %+v", saved)
+	}
+	if method != http.MethodPut || !strings.Contains(query, "locID=10") {
+		t.Fatalf("unexpected request: %s %s", method, query)
+	}
+	if body["id"] != float64(0) || body["assignee_id"] != float64(5) {
+		t.Fatalf("unexpected payload: %+v", body)
+	}
+}
+
+func TestUpsertPWSlotReportsRefusedWrite(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"invalid request payload"}`))
+	}))
+	defer server.Close()
+
+	client := NewClient()
+	client.SetBaseURL(server.URL)
+	if _, err := client.UpsertPWSlot(PWSlotDraft{LocationID: 1}); err == nil || !strings.Contains(err.Error(), "400") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

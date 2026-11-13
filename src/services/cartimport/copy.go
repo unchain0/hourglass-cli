@@ -13,9 +13,11 @@ import (
 // Thursday of the target month, and so on.
 func CopyMonth(source []hourglass.PWSlot, target time.Time, existing []hourglass.PWSlot) Plan {
 	var plan Plan
+	// A slot is identified by location, instant and publisher, so two publishers
+	// sharing a location hour stay independent and a re-run stays idempotent.
 	taken := make(map[string]struct{}, len(existing))
 	for _, slot := range existing {
-		taken[slotKey(slot.LocationID, normalize(slot.Datetime))] = struct{}{}
+		taken[slotKey(slot.LocationID, normalize(slot.Datetime))+fmt.Sprintf("|%d", assignee(slot))] = struct{}{}
 	}
 	seen := make(map[string]struct{}, len(source))
 	busy := make(map[string]struct{}, len(source))
@@ -49,9 +51,7 @@ func CopyMonth(source []hourglass.PWSlot, target time.Time, existing []hourglass
 			}
 			busy[publisherKey] = struct{}{}
 		}
-		if _, exists := taken[slotKey(slot.LocationID, when)]; exists {
-			plan.Problems = append(plan.Problems, Problem{0, fmt.Sprintf(
-				"já existe programação no local %d em %s", slot.LocationID, datetime.Format("02/01/2006 15:04"))})
+		if _, exists := taken[key]; exists {
 			continue
 		}
 		entry := Entry{

@@ -64,6 +64,7 @@ func newCLI(stdout, stderr io.Writer, getenv func(string) string) *CLI {
 		base:        client.GetTransport(),
 		allowSend:   allowSend,
 		allowAssign: allowAssign,
+		allowCart:   getenv("HOURGLASS_ALLOW_CART") == "1",
 	})
 	return &CLI{
 		client: client,
@@ -1157,16 +1158,37 @@ func (c *CLI) CopyCartMonth(fromMonth, toMonth string, apply bool) error {
 		"problems":      problems,
 		"applied":       false,
 	}
-	if err := marshalJSONTo(c.stdout, result); err != nil {
+	if !apply {
+		return marshalJSONTo(c.stdout, result)
+	}
+	if len(plan.Entries) == 0 {
+		return marshalJSONTo(c.stdout, result)
+	}
+
+	created := 0
+	for _, entry := range plan.Entries {
+		draft := hourglass.PWSlotDraft{
+			LocationID: entry.LocationID,
+			Datetime:   entry.Datetime.Format(time.RFC3339),
+			Duration:   fmt.Sprintf("%.2f", entry.DurationHours),
+		}
+		if entry.PublisherID != 0 {
+			publisher := entry.PublisherID
+			draft.AssigneeID = &publisher
+		}
+		if _, err := c.client.UpsertPWSlot(draft); err != nil {
+			return fmt.Errorf("falha ao gravar a %dª de %d designações: %w", created+1, len(plan.Entries), err)
+		}
+		created++
+	}
+	after, err := c.client.GetPWSchedule(target.Format(time.DateOnly), target.AddDate(0, 1, -1).Format(time.DateOnly))
+	if err != nil {
 		return err
 	}
-	if len(plan.Problems) > 0 {
-		return fmt.Errorf("cópia com %d problema(s); nada será gravado", len(plan.Problems))
-	}
-	if apply {
-		return errors.New("gravação ainda não habilitada: o endpoint de escrita do carrinho rejeita o payload (HTTP 400)")
-	}
-	return nil
+	result["applied"] = true
+	result["created"] = created
+	result["target_after"] = len(after)
+	return marshalJSONTo(c.stdout, result)
 }
 
 func (c *CLI) runScheduleNotifications(parsed scheduleArgs) error {
@@ -1183,6 +1205,7 @@ type blocklistTransport struct {
 	base        http.RoundTripper
 	allowSend   bool
 	allowAssign bool
+	allowCart   bool
 }
 
 var avAssigneeWritePath = regexp.MustCompile(`(?i)(?:^|/)scheduling/av_attendant/\d+/?$`)
@@ -1200,6 +1223,9 @@ func (t *blocklistTransport) RoundTrip(req *http.Request) (*http.Response, error
 		if t.allowAssign && isAssigneeOnlyWrite(req) {
 			break
 		}
+		if t.allowCart && isCartWrite(req) {
+			break
+		}
 		return nil, fmt.Errorf("send operations blocked: %s %s", req.Method, req.URL.Path)
 	}
 
@@ -1208,6 +1234,17 @@ func (t *blocklistTransport) RoundTrip(req *http.Request) (*http.Response, error
 		base = http.DefaultTransport
 	}
 	return base.RoundTrip(req)
+}
+
+var cartWritePath = regexp.MustCompile(`(?i)(?:^|/)(?:scheduling/pw/schedule|smpw/schedules)/?$`)
+
+// isCartWrite allows only the public witnessing slot write, never a send or notify call.
+func isCartWrite(req *http.Request) bool {
+	if req.Method != http.MethodPut || !cartWritePath.MatchString(req.URL.Path) {
+		return false
+	}
+	q := strings.ToLower(req.URL.RawQuery)
+	return !strings.Contains(q, "publish") && !strings.Contains(q, "notify") && !strings.Contains(q, "send")
 }
 
 func isAssigneeOnlyWrite(req *http.Request) bool {
