@@ -93,3 +93,23 @@ func mustDate(value string) time.Time {
 	}
 	return parsed
 }
+
+func TestCompareDetectsDurationChanges(t *testing.T) {
+	locations, users := sheetFixture()
+	// Sheet has 08:00 to 09:30 (1.5h)
+	rows := []Row{{Line: 2, Location: "Local Exemplo 1", Date: mustDate("03/12/2026"), Start: "08:00", End: "09:30", Publisher1: "Pessoa Exemplo A"}}
+	entries, _ := Desired(rows, locations, users)
+
+	// Live has 08:00 with 2.0h
+	live := []hourglass.PWSlot{
+		{ID: 5, LocationID: 1, Datetime: "2026-12-03T08:00:00Z", Duration: "2.00", AssigneeID: id(10)},
+	}
+	diff := Compare(entries, live)
+
+	if len(diff.Delete) != 1 || diff.Delete[0].ID != 5 {
+		t.Fatalf("old slot with different duration must be deleted: %+v", diff.Delete)
+	}
+	if len(diff.Create) != 1 || diff.Create[0].DurationHours != 1.5 {
+		t.Fatalf("new slot with updated duration must be created: %+v", diff.Create)
+	}
+}

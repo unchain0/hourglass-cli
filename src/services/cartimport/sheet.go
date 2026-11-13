@@ -150,7 +150,7 @@ func (d MonthDiff) IsEmpty() bool { return len(d.Create) == 0 && len(d.Delete) =
 func Compare(desired []Entry, live []hourglass.PWSlot) MonthDiff {
 	want := make(map[string]Entry, len(desired))
 	for _, entry := range desired {
-		want[slotIdentity(entry.LocationID, entry.Datetime, entry.PublisherID)] = entry
+		want[slotIdentity(entry.LocationID, entry.Datetime, entry.DurationHours, entry.PublisherID)] = entry
 	}
 	var diff MonthDiff
 	for _, slot := range live {
@@ -158,7 +158,8 @@ func Compare(desired []Entry, live []hourglass.PWSlot) MonthDiff {
 		if err != nil {
 			continue
 		}
-		key := slotIdentity(slot.LocationID, at.UTC(), assignee(slot))
+		dur := durationHours(slot.Duration)
+		key := slotIdentity(slot.LocationID, at.UTC(), dur, assignee(slot))
 		if _, keep := want[key]; keep {
 			delete(want, key)
 			continue
@@ -174,6 +175,6 @@ func Compare(desired []Entry, live []hourglass.PWSlot) MonthDiff {
 	return diff
 }
 
-func slotIdentity(locationID int, at time.Time, publisher int) string {
-	return fmt.Sprintf("%d|%s|%d", locationID, at.UTC().Format(time.RFC3339), publisher)
+func slotIdentity(locationID int, at time.Time, duration float64, publisher int) string {
+	return fmt.Sprintf("%d|%s|%.2f|%d", locationID, at.UTC().Format(time.RFC3339), duration, publisher)
 }
