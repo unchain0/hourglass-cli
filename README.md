@@ -272,7 +272,7 @@ hourglass schedule cart sync --file ~/Documents/hourglass/dezembro.xlsx
 HOURGLASS_ALLOW_CART=1 hourglass schedule cart sync --file ~/Documents/hourglass/dezembro.xlsx --apply
 ```
 
-A planilha tem as colunas `local,data,inicio,fim,publicador1,publicador2`, com horários no fuso de São Paulo. O `sync` casa cada designação por local, data, hora e publicador: quem está na planilha e não está no Hourglass é criado, quem está no Hourglass e saiu da planilha é removido, e o que não mudou fica intocado. Planilhas `.xlsx` são convertidas pelo LibreOffice, então `soffice` precisa estar instalado.
+A planilha tem as colunas `local,data,inicio,fim,publicador1,publicador2`, com horários locais exatamente como aparecem no Hourglass (ex.: 05:45, 08:00, 16:00). O `sync` casa cada designação por local, data, hora e publicador: quem está na planilha e não está no Hourglass é criado, quem está no Hourglass e saiu da planilha é removido, e o que não mudou fica intocado. Planilhas `.xlsx` são convertidas pelo LibreOffice, então `soffice` precisa estar instalado.
 
 Para manter a planilha sincronizada, use o script `scripts/cart-sync.sh` (instalado em `~/.local/bin/hourglass-cart-sync`) com um timer do sistema:
 
