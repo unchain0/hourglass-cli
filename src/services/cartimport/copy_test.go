@@ -52,7 +52,7 @@ func TestCopyMonthRejectsMissingFifthWeek(t *testing.T) {
 	}
 }
 
-func TestCopyMonthReportsExistingAndDoubleBookedPublishers(t *testing.T) {
+func TestCopyMonthSkipsSlotsAlreadyPresent(t *testing.T) {
 	source := []hourglass.PWSlot{
 		{ID: 1, LocationID: 10, Datetime: "2026-11-05T08:00:00Z", Duration: "2.00", AssigneeID: id(100)},
 		{ID: 2, LocationID: 11, Datetime: "2026-11-05T08:00:00Z", Duration: "2.00", AssigneeID: id(100)},
@@ -69,7 +69,7 @@ func TestCopyMonthReportsExistingAndDoubleBookedPublishers(t *testing.T) {
 	for _, problem := range plan.Problems {
 		text += problem.String() + "\n"
 	}
-	for _, want := range []string{"já existe", "dois locais"} {
+	for _, want := range []string{"dois locais"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("problems %q should mention %q", text, want)
 		}
