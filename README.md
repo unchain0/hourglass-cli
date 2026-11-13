@@ -259,6 +259,30 @@ HOURGLASS_ALLOW_CART=1 hourglass schedule cart copy --from 2026-11 --to 2026-12 
 
 Sem essa variável, todo PUT continua bloqueado. O comando grava na ordem do plano, para no primeiro erro e relê o mês para confirmar quantas designações ficaram. Ele não chama nenhum endpoint de envio, então nenhuma notificação é disparada.
 
+### Planilha de ida e volta (exportar e sincronizar)
+
+```bash
+# Exporta o mês para uma planilha, uma linha por local e horário
+hourglass schedule cart export --from 2026-12 --to 2026-12 --file ~/Documents/hourglass/dezembro.xlsx
+
+# Compara a planilha com o Hourglass e mostra o que mudaria
+hourglass schedule cart sync --file ~/Documents/hourglass/dezembro.xlsx
+
+# Aplica: cria as linhas novas, atualiza as alteradas e remove as apagadas da planilha
+HOURGLASS_ALLOW_CART=1 hourglass schedule cart sync --file ~/Documents/hourglass/dezembro.xlsx --apply
+```
+
+A planilha tem as colunas `local,data,inicio,fim,publicador1,publicador2`, com horários no fuso de São Paulo. O `sync` casa cada designação por local, data, hora e publicador: quem está na planilha e não está no Hourglass é criado, quem está no Hourglass e saiu da planilha é removido, e o que não mudou fica intocado. Planilhas `.xlsx` são convertidas pelo LibreOffice, então `soffice` precisa estar instalado.
+
+Para manter a planilha sincronizada, use o script `scripts/cart-sync.sh` (instalado em `~/.local/bin/hourglass-cart-sync`) com um timer do sistema:
+
+```bash
+systemctl --user enable --now hourglass-cart-sync.timer   # roda a cada 10 minutos
+tail -f ~/.local/state/hourglass-cart-sync.log            # uma linha JSON por execução
+```
+
+O script não faz nada se a planilha não existir e nunca chama endpoint de envio, portanto nenhuma notificação sai para os publicadores.
+
 ### Programação de carrinho por planilha
 
 O modelo fica em `docs/carrinho-modelo.csv`, com as colunas `local,data,inicio,fim,publicador1,publicador2`.

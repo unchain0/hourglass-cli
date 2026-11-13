@@ -1,14 +1,17 @@
 package main
 
 import (
+	"context"
 	"crypto/subtle"
 	"database/sql"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -1118,6 +1121,10 @@ func (c *CLI) runCartSchedule(parsed scheduleArgs) error {
 		return c.ImportCartSchedule(parsed.file, parsed.apply)
 	case "copy":
 		return c.CopyCartMonth(parsed.fromDate, parsed.toDate, parsed.apply)
+	case "export":
+		return c.ExportCartMonth(parsed.fromDate, parsed.toDate, parsed.file)
+	case "sync":
+		return c.SyncCartSheet(parsed.file, parsed.apply)
 	default:
 		fmt.Fprintf(c.stderr, "Usage: hourglass schedule cart <import --file <planilha.csv> | copy --from YYYY-MM --to YYYY-MM> [--apply] --json\n")
 		return errors.New("unknown cart subcommand")
@@ -1191,6 +1198,187 @@ func (c *CLI) CopyCartMonth(fromMonth, toMonth string, apply bool) error {
 	return marshalJSONTo(c.stdout, result)
 }
 
+// ExportCartMonth writes the live month to a spreadsheet, one row per location
+// and hour, with up to two publishers.
+func (c *CLI) ExportCartMonth(fromMonth, toMonth, out string) error {
+	start, err := time.Parse("2006-01", fromMonth)
+	if err != nil {
+		return exitCode2("--from must be YYYY-MM")
+	}
+	end, err := time.Parse("2006-01", toMonth)
+	if err != nil {
+		return exitCode2("--to must be YYYY-MM")
+	}
+	if out == "" {
+		return exitCode2("missing --file with the output path")
+	}
+	slots, err := c.client.GetPWSchedule(start.Format(time.DateOnly), end.AddDate(0, 1, -1).Format(time.DateOnly))
+	if err != nil {
+		return err
+	}
+	locations, err := c.client.GetPWLocations()
+	if err != nil {
+		return err
+	}
+	users, err := c.client.GetUsers()
+	if err != nil {
+		return err
+	}
+	rows, problems := cartimport.ToSheet(slots, locations, users, false)
+	if err := writeSheet(out, rows); err != nil {
+		return err
+	}
+	return marshalJSONTo(c.stdout, map[string]any{"file": out, "rows": len(rows), "problems": problems})
+}
+
+// SyncCartSheet compares the spreadsheet with the live month and, with --apply,
+// creates the missing slots and deletes the ones removed from the sheet.
+func (c *CLI) SyncCartSheet(file string, apply bool) error {
+	if file == "" {
+		return exitCode2("missing --file with the spreadsheet path")
+	}
+	csvPath, cleanup, err := sheetAsCSV(file)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	source, err := os.Open(csvPath)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = source.Close() }()
+
+	rows, err := cartimport.Parse(source)
+	if err != nil {
+		return err
+	}
+	start, end := rows[0].Date, rows[0].Date
+	for _, row := range rows {
+		if row.Date.Before(start) {
+			start = row.Date
+		}
+		if row.Date.After(end) {
+			end = row.Date
+		}
+	}
+	locations, err := c.client.GetPWLocations()
+	if err != nil {
+		return err
+	}
+	users, err := c.client.GetUsers()
+	if err != nil {
+		return err
+	}
+	live, err := c.client.GetPWSchedule(start.Format(time.DateOnly), end.Format(time.DateOnly))
+	if err != nil {
+		return err
+	}
+	desired, problems := cartimport.Desired(rows, locations, users, false)
+	diff := cartimport.Compare(desired, live)
+	result := map[string]any{
+		"create":   len(diff.Create),
+		"delete":   len(diff.Delete),
+		"problems": problems,
+		"applied":  false,
+	}
+	if !apply || diff.IsEmpty() {
+		return marshalJSONTo(c.stdout, result)
+	}
+	for _, entry := range diff.Create {
+		draft := hourglass.PWSlotDraft{
+			LocationID: entry.LocationID,
+			Datetime:   entry.Datetime.Format(time.RFC3339),
+			Duration:   fmt.Sprintf("%.2f", entry.DurationHours),
+		}
+		if entry.PublisherID != 0 {
+			publisher := entry.PublisherID
+			draft.AssigneeID = &publisher
+		}
+		if _, err := c.client.UpsertPWSlot(draft); err != nil {
+			return fmt.Errorf("falha ao criar designação: %w", err)
+		}
+	}
+	for _, slot := range diff.Delete {
+		if err := c.client.DeletePWSlot(slot.ID); err != nil {
+			return fmt.Errorf("falha ao remover designação: %w", err)
+		}
+	}
+	result["applied"] = true
+	return marshalJSONTo(c.stdout, result)
+}
+
+func writeSheet(path string, rows []cartimport.ExportRow) error {
+	temporary, err := os.CreateTemp("", "cart-export-*.csv")
+	if err != nil {
+		return err
+	}
+	csvPath := temporary.Name()
+	defer func() { _ = os.Remove(csvPath) }()
+
+	writer := csv.NewWriter(temporary)
+	_ = writer.Write(cartimport.Columns)
+	for _, row := range rows {
+		_ = writer.Write([]string{row.Location, row.Date, row.Start, row.End, row.Publisher1, row.Publisher2})
+	}
+	writer.Flush()
+	if err := writer.Error(); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	if strings.HasSuffix(strings.ToLower(path), ".xlsx") {
+		return convertToXLSX(csvPath, path)
+	}
+	return copyFile(csvPath, path)
+}
+
+func convertToXLSX(source, target string) error {
+	dir, err := os.MkdirTemp("", "cart-xlsx-")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "soffice", "--headless", "--convert-to", "xlsx", "--outdir", dir, source)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("soffice failed: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	base := strings.TrimSuffix(filepath.Base(source), filepath.Ext(source))
+	return copyFile(filepath.Join(dir, base+".xlsx"), target)
+}
+
+func sheetAsCSV(path string) (string, func(), error) {
+	if !strings.HasSuffix(strings.ToLower(path), ".xlsx") {
+		return path, func() {}, nil
+	}
+	dir, err := os.MkdirTemp("", "cart-sheet-")
+	if err != nil {
+		return "", func() {}, err
+	}
+	cleanup := func() { _ = os.RemoveAll(dir) }
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "soffice", "--headless", "--convert-to", "csv", "--outdir", dir, path)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		cleanup()
+		return "", func() {}, fmt.Errorf("soffice failed: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	return filepath.Join(dir, base+".csv"), cleanup, nil
+}
+
+func copyFile(source, target string) error {
+	content, err := os.ReadFile(source)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(target, content, 0o600)
+}
+
 func (c *CLI) runScheduleNotifications(parsed scheduleArgs) error {
 	if parsed.fromDate == "" || parsed.toDate == "" {
 		fmt.Fprintf(c.stderr, "Usage: hourglass schedule notifications --from YYYY-MM-DD --to YYYY-MM-DD [--type mm|ava|fm|pubwit] --json\n")
@@ -1236,11 +1424,18 @@ func (t *blocklistTransport) RoundTrip(req *http.Request) (*http.Response, error
 	return base.RoundTrip(req)
 }
 
-var cartWritePath = regexp.MustCompile(`(?i)(?:^|/)(?:scheduling/pw/schedule|smpw/schedules)/?$`)
+var (
+	cartWritePath  = regexp.MustCompile(`(?i)(?:^|/)(?:scheduling/pw/schedule|smpw/schedules)/?$`)
+	cartDeletePath = regexp.MustCompile(`(?i)(?:^|/)scheduling/pw/schedule/\d+/?$`)
+)
 
-// isCartWrite allows only the public witnessing slot write, never a send or notify call.
+// isCartWrite allows the public witnessing slot upsert and the single-slot delete,
+// never a send or notify call.
 func isCartWrite(req *http.Request) bool {
-	if req.Method != http.MethodPut || !cartWritePath.MatchString(req.URL.Path) {
+	switch {
+	case req.Method == http.MethodPut && cartWritePath.MatchString(req.URL.Path):
+	case req.Method == http.MethodDelete && cartDeletePath.MatchString(req.URL.Path):
+	default:
 		return false
 	}
 	q := strings.ToLower(req.URL.RawQuery)
