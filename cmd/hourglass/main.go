@@ -1224,7 +1224,7 @@ func (c *CLI) ExportCartMonth(fromMonth, toMonth, out string) error {
 	if err != nil {
 		return err
 	}
-	rows, problems := cartimport.ToSheet(slots, locations, users, false)
+	rows, problems := cartimport.ToSheet(slots, locations, users)
 	if err := writeSheet(out, rows); err != nil {
 		return err
 	}
@@ -1274,7 +1274,7 @@ func (c *CLI) SyncCartSheet(file string, apply bool) error {
 	if err != nil {
 		return err
 	}
-	desired, problems := cartimport.Desired(rows, locations, users, false)
+	desired, problems := cartimport.Desired(rows, locations, users)
 	diff := cartimport.Compare(desired, live)
 	result := map[string]any{
 		"create":   len(diff.Create),

@@ -8,9 +8,6 @@ import (
 	"hourglass-rejections-rpa/src/services/hourglass"
 )
 
-// brazilOffset is the fixed offset of America/Sao_Paulo; the zone has no DST.
-var brazilOffset = -3 * time.Hour
-
 // ExportRow is one cart slot as a person reads it: one location and one hour,
 // with up to two publishers.
 type ExportRow struct {
@@ -23,8 +20,8 @@ type ExportRow struct {
 }
 
 // ToSheet builds spreadsheet rows from live slots, grouping the publishers that
-// share a location and hour. Times are shown in Brazil time unless utc is set.
-func ToSheet(slots []hourglass.PWSlot, locations []hourglass.PWLocation, users []hourglass.User, utc bool) ([]ExportRow, []Problem) {
+// share a location and hour. The hours match the slot datetime directly.
+func ToSheet(slots []hourglass.PWSlot, locations []hourglass.PWLocation, users []hourglass.User) ([]ExportRow, []Problem) {
 	names := make(map[int]string, len(users))
 	for _, user := range users {
 		names[user.ID] = publisherName(user)
@@ -47,9 +44,6 @@ func ToSheet(slots []hourglass.PWSlot, locations []hourglass.PWLocation, users [
 		if err != nil {
 			problems = append(problems, Problem{0, fmt.Sprintf("horário inválido: %q", slot.Datetime)})
 			continue
-		}
-		if !utc {
-			at = at.In(time.FixedZone("BRT", int(brazilOffset.Seconds())))
 		}
 		key := fmt.Sprintf("%d|%s|%s", slot.LocationID, at.Format(time.RFC3339), slot.Duration)
 		entry := grouped[key]
@@ -99,7 +93,7 @@ func ToSheet(slots []hourglass.PWSlot, locations []hourglass.PWLocation, users [
 
 // Desired turns spreadsheet rows into the slots the sheet asks for. It never
 // looks at the live schedule; callers compare the result with it.
-func Desired(rows []Row, locations []hourglass.PWLocation, users []hourglass.User, utc bool) ([]Entry, []Problem) {
+func Desired(rows []Row, locations []hourglass.PWLocation, users []hourglass.User) ([]Entry, []Problem) {
 	var entries []Entry
 	var problems []Problem
 	for _, row := range rows {
@@ -119,9 +113,6 @@ func Desired(rows []Row, locations []hourglass.PWLocation, users []hourglass.Use
 			continue
 		}
 		datetime := time.Date(row.Date.Year(), row.Date.Month(), row.Date.Day(), start.Hour(), start.Minute(), 0, 0, time.UTC)
-		if !utc {
-			datetime = datetime.Add(-brazilOffset)
-		}
 		for _, name := range []string{row.Publisher1, row.Publisher2} {
 			if name == "" {
 				continue

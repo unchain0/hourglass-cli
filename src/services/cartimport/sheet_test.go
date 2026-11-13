@@ -15,13 +15,13 @@ func sheetFixture() ([]hourglass.PWLocation, []hourglass.User) {
 		}
 }
 
-func TestToSheetGroupsPublishersAndShowsBrazilTime(t *testing.T) {
+func TestToSheetGroupsPublishersAndPreservesTime(t *testing.T) {
 	locations, users := sheetFixture()
 	slots := []hourglass.PWSlot{
-		{ID: 1, LocationID: 1, Datetime: "2026-12-03T11:00:00Z", Duration: "2.00", AssigneeID: id(11)},
-		{ID: 2, LocationID: 1, Datetime: "2026-12-03T11:00:00Z", Duration: "2.00", AssigneeID: id(10)},
+		{ID: 1, LocationID: 1, Datetime: "2026-12-03T08:00:00Z", Duration: "2.00", AssigneeID: id(11)},
+		{ID: 2, LocationID: 1, Datetime: "2026-12-03T08:00:00Z", Duration: "2.00", AssigneeID: id(10)},
 	}
-	rows, problems := ToSheet(slots, locations, users, false)
+	rows, problems := ToSheet(slots, locations, users)
 
 	if len(problems) != 0 {
 		t.Fatalf("unexpected problems: %v", problems)
@@ -34,31 +34,22 @@ func TestToSheetGroupsPublishersAndShowsBrazilTime(t *testing.T) {
 		t.Fatalf("unexpected row: %+v", row)
 	}
 	if row.Start != "08:00" || row.End != "10:00" {
-		t.Fatalf("times should be Brazil time: %+v", row)
+		t.Fatalf("times should match slot datetime directly: %+v", row)
 	}
 	if row.Publisher1 != "Pessoa Exemplo A" || row.Publisher2 != "Pessoa Exemplo B" {
 		t.Fatalf("unexpected publishers: %+v", row)
 	}
 }
 
-func TestToSheetKeepsUtcWhenAsked(t *testing.T) {
-	locations, users := sheetFixture()
-	slots := []hourglass.PWSlot{{ID: 1, LocationID: 1, Datetime: "2026-12-03T11:00:00Z", Duration: "2.00", AssigneeID: id(10)}}
-	rows, _ := ToSheet(slots, locations, users, true)
-	if rows[0].Start != "11:00" {
-		t.Fatalf("expected UTC time, got %+v", rows[0])
-	}
-}
-
-func TestDesiredConvertsSheetTimesToUtc(t *testing.T) {
+func TestDesiredPreservesSlotTimes(t *testing.T) {
 	locations, users := sheetFixture()
 	rows := []Row{{Line: 2, Location: "Local Exemplo 1", Date: mustDate("03/12/2026"), Start: "08:00", End: "10:00", Publisher1: "Pessoa Exemplo A"}}
 
-	entries, problems := Desired(rows, locations, users, false)
+	entries, problems := Desired(rows, locations, users)
 	if len(problems) != 0 || len(entries) != 1 {
 		t.Fatalf("unexpected result: %+v %v", entries, problems)
 	}
-	if got := entries[0].Datetime.Format(time.RFC3339); got != "2026-12-03T11:00:00Z" {
+	if got := entries[0].Datetime.Format(time.RFC3339); got != "2026-12-03T08:00:00Z" {
 		t.Fatalf("unexpected instant: %s", got)
 	}
 	if entries[0].DurationHours != 2 {
@@ -69,11 +60,11 @@ func TestDesiredConvertsSheetTimesToUtc(t *testing.T) {
 func TestCompareFindsCreatesAndDeletes(t *testing.T) {
 	locations, users := sheetFixture()
 	rows := []Row{{Line: 2, Location: "Local Exemplo 1", Date: mustDate("03/12/2026"), Start: "08:00", End: "10:00", Publisher1: "Pessoa Exemplo A"}}
-	entries, _ := Desired(rows, locations, users, false)
+	entries, _ := Desired(rows, locations, users)
 
 	live := []hourglass.PWSlot{
-		{ID: 5, LocationID: 1, Datetime: "2026-12-03T11:00:00Z", Duration: "2.00", AssigneeID: id(10)},
-		{ID: 6, LocationID: 1, Datetime: "2026-12-04T11:00:00Z", Duration: "2.00", AssigneeID: id(10)},
+		{ID: 5, LocationID: 1, Datetime: "2026-12-03T08:00:00Z", Duration: "2.00", AssigneeID: id(10)},
+		{ID: 6, LocationID: 1, Datetime: "2026-12-04T08:00:00Z", Duration: "2.00", AssigneeID: id(10)},
 	}
 	diff := Compare(entries, live)
 
