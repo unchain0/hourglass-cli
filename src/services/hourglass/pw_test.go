@@ -14,7 +14,7 @@ func TestGetPWLocationsAndScheduleUseAuthenticatedEndpoints(t *testing.T) {
 		gotPaths = append(gotPaths, r.URL.RequestURI())
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/scheduling/pw/locations"):
-			_, _ = w.Write([]byte(`[{"id":49038,"name":"PSF - Barreira","disabled":false,"notes":"Posto"}]`))
+			_, _ = w.Write([]byte(`[{"id":49038,"name":"Local Exemplo 1","disabled":false,"notes":"Posto"}]`))
 		case strings.HasSuffix(r.URL.Path, "/scheduling/pw/schedule/2026-12-01_2026-12-31"):
 			_, _ = w.Write([]byte(`[{"id":47025722,"location_id":49038,"datetime":"2026-12-02T08:00:00Z","duration":"2.00","assignee_id":2672077,"notes":null}]`))
 		default:
@@ -30,7 +30,7 @@ func TestGetPWLocationsAndScheduleUseAuthenticatedEndpoints(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetPWLocations: %v", err)
 	}
-	if len(locations) != 1 || locations[0].ID != 49038 || locations[0].Name != "PSF - Barreira" || locations[0].Disabled {
+	if len(locations) != 1 || locations[0].ID != 49038 || locations[0].Name != "Local Exemplo 1" || locations[0].Disabled {
 		t.Fatalf("unexpected locations: %+v", locations)
 	}
 
