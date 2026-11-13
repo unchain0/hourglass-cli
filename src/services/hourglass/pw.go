@@ -81,3 +81,18 @@ func (c *Client) UpsertPWSlot(slot PWSlotDraft) (PWSlot, error) {
 	}
 	return saved, nil
 }
+
+// DeletePWSlot removes one slot by its id.
+func (c *Client) DeletePWSlot(id int) error {
+	url := fmt.Sprintf("%s/scheduling/pw/schedule/%d", c.baseURL, id)
+	resp, err := c.doAuthenticated(http.MethodDelete, url, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		detail, _ := io.ReadAll(io.LimitReader(resp.Body, 120))
+		return fmt.Errorf("unexpected status code: %d: %s", resp.StatusCode, string(detail))
+	}
+	return nil
+}
