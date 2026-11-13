@@ -10,87 +10,100 @@ import (
 
 func id(value int) *int { return &value }
 
-func TestCopyMonthKeepsWeekdayOrdinalAndTime(t *testing.T) {
+func december() time.Time { return time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC) }
+
+func dates(plan Plan) []string {
+	out := make([]string, 0, len(plan.Entries))
+	for _, entry := range plan.Entries {
+		out = append(out, entry.Datetime.Format(time.DateOnly))
+	}
+	return out
+}
+
+func TestCopyMonthRepeatsEveryMatchingWeekday(t *testing.T) {
 	source := []hourglass.PWSlot{
 		{ID: 1, LocationID: 10, Datetime: "2026-11-05T08:00:00Z", Duration: "2.00", AssigneeID: id(100)},
-		{ID: 2, LocationID: 10, Datetime: "2026-11-05T08:00:00Z", Duration: "2.00", AssigneeID: id(101)},
-		{ID: 3, LocationID: 11, Datetime: "2026-11-05T10:00:00Z", Duration: "3.00", AssigneeID: id(102)},
 	}
-	plan := CopyMonth(source, time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC), nil)
+	plan := CopyMonth(source, december(), nil)
 
 	if !plan.OK() {
 		t.Fatalf("unexpected problems: %v", plan.Problems)
 	}
-	if len(plan.Entries) != 3 {
-		t.Fatalf("expected 3 entries, got %d", len(plan.Entries))
+	want := []string{"2026-12-03", "2026-12-10", "2026-12-17", "2026-12-24", "2026-12-31"}
+	if got := dates(plan); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("unexpected dates: %v", got)
 	}
-	// 2026-11-05 is the first Thursday of November; December's first Thursday is the 3rd.
-	for _, entry := range plan.Entries[:2] {
-		if got := entry.Datetime.Format(time.RFC3339); got != "2026-12-03T08:00:00Z" {
-			t.Fatalf("unexpected datetime: %s", got)
-		}
-	}
-	if got := plan.Entries[2].Datetime.Format(time.RFC3339); got != "2026-12-03T10:00:00Z" {
-		t.Fatalf("unexpected datetime: %s", got)
-	}
-	if plan.Entries[0].DurationHours != 2 || plan.Entries[2].DurationHours != 3 {
-		t.Fatalf("unexpected durations: %+v", plan.Entries)
+	if plan.Entries[0].DurationHours != 2 || plan.Entries[0].PublisherID != 100 {
+		t.Fatalf("unexpected entry: %+v", plan.Entries[0])
 	}
 }
 
-func TestCopyMonthRejectsMissingFifthWeek(t *testing.T) {
+func TestCopyMonthKeepsUnassignedSlotsAndDuration(t *testing.T) {
 	source := []hourglass.PWSlot{
-		{ID: 1, LocationID: 10, Datetime: "2026-11-30T08:00:00Z", Duration: "2.00", AssigneeID: id(100)},
+		{ID: 2, LocationID: 12, Datetime: "2026-11-06T09:30:00Z", Duration: "1.50", AssigneeID: nil},
 	}
-	plan := CopyMonth(source, time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC), nil)
+	plan := CopyMonth(source, december(), nil)
 
-	if plan.OK() {
-		t.Fatal("expected problem for a fifth week that the target month lacks")
+	if !plan.OK() || len(plan.Entries) != 4 {
+		t.Fatalf("unexpected plan: %+v", plan)
 	}
-	if len(plan.Entries) != 0 {
-		t.Fatalf("unexpected entries: %+v", plan.Entries)
+	for _, entry := range plan.Entries {
+		if entry.PublisherID != 0 || entry.DurationHours != 1.5 {
+			t.Fatalf("unexpected entry: %+v", entry)
+		}
+		if entry.Datetime.Weekday() != time.Friday {
+			t.Fatalf("unexpected weekday: %s", entry.Datetime.Weekday())
+		}
 	}
 }
 
 func TestCopyMonthSkipsSlotsAlreadyPresent(t *testing.T) {
 	source := []hourglass.PWSlot{
 		{ID: 1, LocationID: 10, Datetime: "2026-11-05T08:00:00Z", Duration: "2.00", AssigneeID: id(100)},
-		{ID: 2, LocationID: 11, Datetime: "2026-11-05T08:00:00Z", Duration: "2.00", AssigneeID: id(100)},
 	}
 	existing := []hourglass.PWSlot{
-		{ID: 9, LocationID: 10, Datetime: "2026-12-03T08:00:00Z", Duration: "2.00", AssigneeID: id(200)},
+		{ID: 9, LocationID: 10, Datetime: "2026-12-10T08:00:00Z", Duration: "2.00", AssigneeID: id(100)},
 	}
-	plan := CopyMonth(source, time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC), existing)
+	plan := CopyMonth(source, december(), existing)
 
-	if plan.OK() {
-		t.Fatal("expected problems")
+	if !plan.OK() || len(plan.Entries) != 4 {
+		t.Fatalf("unexpected plan: %+v", plan)
 	}
-	text := ""
-	for _, problem := range plan.Problems {
-		text += problem.String() + "\n"
-	}
-	for _, want := range []string{"dois locais"} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("problems %q should mention %q", text, want)
+	for _, date := range dates(plan) {
+		if date == "2026-12-10" {
+			t.Fatal("existing slot must not be created again")
 		}
 	}
 }
 
-func TestCopyMonthSkipsDuplicatesAndKeepsUnassignedSlots(t *testing.T) {
-	source := []hourglass.PWSlot{
-		{ID: 1, LocationID: 10, Datetime: "2026-11-05T08:00:00Z", Duration: "2.00", AssigneeID: id(100)},
-		{ID: 1, LocationID: 10, Datetime: "2026-11-05T08:00:00Z", Duration: "2.00", AssigneeID: id(100)},
-		{ID: 2, LocationID: 12, Datetime: "2026-11-06T09:30:00Z", Duration: "1.50", AssigneeID: nil},
-	}
-	plan := CopyMonth(source, time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC), nil)
+func TestCopyMonthCollapsesDuplicateSourceRows(t *testing.T) {
+	row := hourglass.PWSlot{ID: 1, LocationID: 10, Datetime: "2026-11-05T08:00:00Z", Duration: "2.00", AssigneeID: nil}
+	plan := CopyMonth([]hourglass.PWSlot{row, row}, december(), nil)
 
-	if !plan.OK() || len(plan.Entries) != 2 {
+	if !plan.OK() || len(plan.Entries) != 5 {
 		t.Fatalf("unexpected plan: %+v", plan)
 	}
-	if plan.Entries[1].PublisherID != 0 || plan.Entries[1].DurationHours != 1.5 {
-		t.Fatalf("unexpected unassigned entry: %+v", plan.Entries[1])
+}
+
+func TestCopyMonthReportsDoubleBookedPublishers(t *testing.T) {
+	source := []hourglass.PWSlot{
+		{ID: 1, LocationID: 10, Datetime: "2026-11-05T08:00:00Z", Duration: "2.00", AssigneeID: id(100)},
+		{ID: 2, LocationID: 11, Datetime: "2026-11-05T08:00:00Z", Duration: "2.00", AssigneeID: id(100)},
 	}
-	if got := plan.Entries[1].Datetime.Format(time.RFC3339); got != "2026-12-04T09:30:00Z" {
-		t.Fatalf("unexpected datetime: %s", got)
+	plan := CopyMonth(source, december(), nil)
+
+	if plan.OK() {
+		t.Fatal("expected problems")
 	}
+	if !strings.Contains(joinProblems(plan), "dois locais") {
+		t.Fatalf("unexpected problems: %v", joinProblems(plan))
+	}
+}
+
+func joinProblems(plan Plan) string {
+	out := make([]string, 0, len(plan.Problems))
+	for _, problem := range plan.Problems {
+		out = append(out, problem.String())
+	}
+	return strings.Join(out, "\n")
 }
