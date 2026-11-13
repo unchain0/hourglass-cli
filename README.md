@@ -243,6 +243,16 @@ hourglass schedule privileges --json
 hourglass schedule check-rules --json
 ```
 
+### Copiar a programação de um mês para outro
+
+```bash
+hourglass schedule cart copy --from 2026-11 --to 2026-12
+```
+
+Cada designação de novembro é replicada em dezembro mantendo o dia da semana e o horário: a 2ª quinta-feira das 08:00 continua sendo a 2ª quinta-feira das 08:00. O comando devolve `entries` com `LocationID`, `Datetime`, `DurationHours` e `PublisherID`, e lista em `problems` os casos que exigem decisão: mês de destino sem a 5ª semana correspondente, horário já ocupado no local e publicador em dois locais ao mesmo tempo.
+
+A gravação (`--apply`) segue desabilitada porque o endpoint de escrita recusa o payload com HTTP 400.
+
 ### Programação de carrinho por planilha
 
 O modelo fica em `docs/carrinho-modelo.csv`, com as colunas `local,data,inicio,fim,publicador1,publicador2`.

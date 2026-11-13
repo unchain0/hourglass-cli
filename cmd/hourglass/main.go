@@ -1112,11 +1112,61 @@ func marshalJSONTo(w io.Writer, value any) error {
 }
 
 func (c *CLI) runCartSchedule(parsed scheduleArgs) error {
-	if parsed.action != "import" {
-		fmt.Fprintf(c.stderr, "Usage: hourglass schedule cart import --file <planilha.csv> [--apply] --json\n")
+	switch parsed.action {
+	case "import":
+		return c.ImportCartSchedule(parsed.file, parsed.apply)
+	case "copy":
+		return c.CopyCartMonth(parsed.fromDate, parsed.toDate, parsed.apply)
+	default:
+		fmt.Fprintf(c.stderr, "Usage: hourglass schedule cart <import --file <planilha.csv> | copy --from YYYY-MM --to YYYY-MM> [--apply] --json\n")
 		return errors.New("unknown cart subcommand")
 	}
-	return c.ImportCartSchedule(parsed.file, parsed.apply)
+}
+
+// CopyCartMonth previews the target month built from the source month, keeping
+// weekday, time of day, location and publishers.
+func (c *CLI) CopyCartMonth(fromMonth, toMonth string, apply bool) error {
+	start, err := time.Parse("2006-01", fromMonth)
+	if err != nil {
+		return exitCode2("--from must be YYYY-MM")
+	}
+	target, err := time.Parse("2006-01", toMonth)
+	if err != nil {
+		return exitCode2("--to must be YYYY-MM")
+	}
+	source, err := c.client.GetPWSchedule(start.Format(time.DateOnly), start.AddDate(0, 1, -1).Format(time.DateOnly))
+	if err != nil {
+		return err
+	}
+	existing, err := c.client.GetPWSchedule(target.Format(time.DateOnly), target.AddDate(0, 1, -1).Format(time.DateOnly))
+	if err != nil {
+		return err
+	}
+
+	plan := cartimport.CopyMonth(source, target, existing)
+	problems := make([]string, 0, len(plan.Problems))
+	for _, problem := range plan.Problems {
+		problems = append(problems, problem.String())
+	}
+	result := map[string]any{
+		"from":          fromMonth,
+		"to":            toMonth,
+		"source_slots":  len(source),
+		"target_before": len(existing),
+		"entries":       plan.Entries,
+		"problems":      problems,
+		"applied":       false,
+	}
+	if err := marshalJSONTo(c.stdout, result); err != nil {
+		return err
+	}
+	if len(plan.Problems) > 0 {
+		return fmt.Errorf("cópia com %d problema(s); nada será gravado", len(plan.Problems))
+	}
+	if apply {
+		return errors.New("gravação ainda não habilitada: o endpoint de escrita do carrinho rejeita o payload (HTTP 400)")
+	}
+	return nil
 }
 
 func (c *CLI) runScheduleNotifications(parsed scheduleArgs) error {
