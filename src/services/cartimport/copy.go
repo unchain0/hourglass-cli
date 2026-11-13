@@ -21,7 +21,7 @@ type slotTemplate struct {
 // the roster currently in force, and applies it to every matching weekday of the
 // target month.
 func CopyMonth(source []hourglass.PWSlot, target time.Time, existing []hourglass.PWSlot) Plan {
-	var plan Plan
+	plan := Plan{Entries: []Entry{}}
 	week := latestWeek(source, &plan)
 	// A slot is identified by location, instant and publisher, so two publishers
 	// sharing a location hour stay independent and a re-run stays idempotent.
