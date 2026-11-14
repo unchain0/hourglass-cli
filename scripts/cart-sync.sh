@@ -18,4 +18,4 @@ export HOURGLASS_ALLOW_CART=1
 
 mkdir -p "$(dirname "$LOG")"
 printf '%s ' "$(date -Iseconds)" >>"$LOG"
-"$CLI" schedule cart sync --file "$SHEET" --apply >>"$LOG" 2>&1
+"$CLI" schedule cart sync --file "$SHEET" --apply --prune >>"$LOG" 2>&1

@@ -903,6 +903,7 @@ type scheduleArgs struct {
 	subcommand string
 	action     string
 	file       string
+	prune      bool
 	fromDate   string
 	toDate     string
 	lgroup     int
@@ -960,6 +961,9 @@ func parseScheduleArgs(args []string) (scheduleArgs, error) {
 			i = next
 		case "--apply":
 			parsed.apply = true
+			i++
+		case "--prune":
+			parsed.prune = true
 			i++
 		case flagJSON:
 			i++
@@ -1054,6 +1058,8 @@ func (c *CLI) ImportCartSchedule(file string, apply bool) error {
 	if err != nil {
 		return err
 	}
+	// The sheet owns its months, so the comparison covers the full month even
+	// when the sheet has no rows for some of its days.
 	start, end := rows[0].Date, rows[0].Date
 	for _, row := range rows {
 		if row.Date.Before(start) {
@@ -1063,6 +1069,8 @@ func (c *CLI) ImportCartSchedule(file string, apply bool) error {
 			end = row.Date
 		}
 	}
+	start = time.Date(start.Year(), start.Month(), 1, 0, 0, 0, 0, time.UTC)
+	end = time.Date(end.Year(), end.Month()+1, 1, 0, 0, 0, 0, time.UTC).AddDate(0, 0, -1)
 
 	locations, err := c.client.GetPWLocations()
 	if err != nil {
@@ -1124,7 +1132,7 @@ func (c *CLI) runCartSchedule(parsed scheduleArgs) error {
 	case "export":
 		return c.ExportCartMonth(parsed.fromDate, parsed.toDate, parsed.file)
 	case "sync":
-		return c.SyncCartSheet(parsed.file, parsed.apply)
+		return c.SyncCartSheet(parsed.file, parsed.apply, parsed.prune)
 	default:
 		fmt.Fprintf(c.stderr, "Usage: hourglass schedule cart <import --file <planilha.csv> | copy --from YYYY-MM --to YYYY-MM> [--apply] --json\n")
 		return errors.New("unknown cart subcommand")
@@ -1233,7 +1241,7 @@ func (c *CLI) ExportCartMonth(fromMonth, toMonth, out string) error {
 
 // SyncCartSheet compares the spreadsheet with the live month and, with --apply,
 // creates the missing slots and deletes the ones removed from the sheet.
-func (c *CLI) SyncCartSheet(file string, apply bool) error {
+func (c *CLI) SyncCartSheet(file string, apply, prune bool) error {
 	if file == "" {
 		return exitCode2("missing --file with the spreadsheet path")
 	}
@@ -1253,6 +1261,8 @@ func (c *CLI) SyncCartSheet(file string, apply bool) error {
 	if err != nil {
 		return err
 	}
+	// The sheet owns its months, so the comparison covers the full month even
+	// when the sheet has no rows for some of its days.
 	start, end := rows[0].Date, rows[0].Date
 	for _, row := range rows {
 		if row.Date.Before(start) {
@@ -1262,6 +1272,8 @@ func (c *CLI) SyncCartSheet(file string, apply bool) error {
 			end = row.Date
 		}
 	}
+	start = time.Date(start.Year(), start.Month(), 1, 0, 0, 0, 0, time.UTC)
+	end = time.Date(end.Year(), end.Month()+1, 1, 0, 0, 0, 0, time.UTC).AddDate(0, 0, -1)
 	locations, err := c.client.GetPWLocations()
 	if err != nil {
 		return err
@@ -1280,6 +1292,7 @@ func (c *CLI) SyncCartSheet(file string, apply bool) error {
 		"create":   len(diff.Create),
 		"delete":   len(diff.Delete),
 		"problems": problems,
+		"prune":    prune,
 		"applied":  false,
 	}
 	if !apply || diff.IsEmpty() {
@@ -1299,9 +1312,11 @@ func (c *CLI) SyncCartSheet(file string, apply bool) error {
 			return fmt.Errorf("falha ao criar designação: %w", err)
 		}
 	}
-	for _, slot := range diff.Delete {
-		if err := c.client.DeletePWSlot(slot.ID); err != nil {
-			return fmt.Errorf("falha ao remover designação: %w", err)
+	if prune {
+		for _, slot := range diff.Delete {
+			if err := c.client.DeletePWSlot(slot.ID); err != nil {
+				return fmt.Errorf("falha ao remover designação: %w", err)
+			}
 		}
 	}
 	result["applied"] = true

@@ -113,3 +113,41 @@ func TestCompareDetectsDurationChanges(t *testing.T) {
 		t.Fatalf("new slot with updated duration must be created: %+v", diff.Create)
 	}
 }
+
+func TestDesiredKeepsRowsWithoutPublishers(t *testing.T) {
+	locations, users := sheetFixture()
+	rows := []Row{{Line: 2, Location: "Local Exemplo 1", Date: mustDate("03/12/2026"), Start: "08:00", End: "10:00"}}
+
+	entries, problems := Desired(rows, locations, users)
+	if len(problems) != 0 {
+		t.Fatalf("unexpected problems: %v", problems)
+	}
+	if len(entries) != 1 || entries[0].PublisherID != 0 {
+		t.Fatalf("row without publishers must create a vacant slot: %+v", entries)
+	}
+	if entries[0].DurationHours != 2 {
+		t.Fatalf("unexpected duration: %+v", entries[0])
+	}
+}
+
+func TestCompareAssignsAndClearsPublishersFromSheet(t *testing.T) {
+	locations, users := sheetFixture()
+	vacant := []Row{{Line: 2, Location: "Local Exemplo 1", Date: mustDate("03/12/2026"), Start: "08:00", End: "10:00"}}
+	assigned := []Row{{Line: 2, Location: "Local Exemplo 1", Date: mustDate("03/12/2026"), Start: "08:00", End: "10:00", Publisher1: "Pessoa Exemplo A"}}
+
+	live := []hourglass.PWSlot{
+		{ID: 7, LocationID: 1, Datetime: "2026-12-03T08:00:00Z", Duration: "2.00", AssigneeID: id(10)},
+	}
+
+	vacantEntries, _ := Desired(vacant, locations, users)
+	diff := Compare(vacantEntries, live)
+	if len(diff.Delete) != 1 || len(diff.Create) != 1 || diff.Create[0].PublisherID != 0 {
+		t.Fatalf("clearing a publisher must replace the slot: %+v", diff)
+	}
+
+	assignedEntries, _ := Desired(assigned, locations, users)
+	diff = Compare(assignedEntries, live)
+	if !diff.IsEmpty() {
+		t.Fatalf("same publisher must not change anything: %+v", diff)
+	}
+}

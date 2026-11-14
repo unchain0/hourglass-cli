@@ -130,10 +130,6 @@ func parseRow(line int, record []string) (Row, error) {
 			return Row{}, fmt.Errorf("campo %q vazio", name)
 		}
 	}
-	if values[4] == "" {
-		return Row{}, errors.New("campo \"publicador1\" vazio")
-	}
-
 	date, err := parseDate(values[1])
 	if err != nil {
 		return Row{}, err
@@ -208,10 +204,12 @@ func Build(rows []Row, locations []hourglass.PWLocation, users []hourglass.User,
 		end, _ := time.Parse("15:04", row.End)
 		datetime := time.Date(row.Date.Year(), row.Date.Month(), row.Date.Day(), start.Hour(), start.Minute(), 0, 0, time.UTC)
 
+		assigned := false
 		for _, name := range []string{row.Publisher1, row.Publisher2} {
 			if name == "" {
 				continue
 			}
+			assigned = true
 			publisher, problem := resolvePublisher(row.Line, name, users)
 			if problem != nil {
 				plan.Problems = append(plan.Problems, *problem)
@@ -246,6 +244,15 @@ func Build(rows []Row, locations []hourglass.PWLocation, users []hourglass.User,
 				DurationHours: end.Sub(start).Hours(),
 				PublisherID:   publisher.ID,
 				PublisherName: publisherName(publisher),
+			})
+		}
+		if !assigned {
+			plan.Entries = append(plan.Entries, Entry{
+				Line:          row.Line,
+				LocationID:    location.ID,
+				LocationName:  location.Name,
+				Datetime:      datetime,
+				DurationHours: end.Sub(start).Hours(),
 			})
 		}
 	}

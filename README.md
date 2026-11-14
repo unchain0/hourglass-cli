@@ -269,10 +269,14 @@ hourglass schedule cart export --from 2026-12 --to 2026-12 --file ~/Documents/ho
 hourglass schedule cart sync --file ~/Documents/hourglass/dezembro.xlsx
 
 # Aplica: cria as linhas novas, atualiza as alteradas e remove as apagadas da planilha
-HOURGLASS_ALLOW_CART=1 hourglass schedule cart sync --file ~/Documents/hourglass/dezembro.xlsx --apply
+HOURGLASS_ALLOW_CART=1 hourglass schedule cart sync --file ~/Documents/hourglass/dezembro.xlsx --apply --prune
 ```
 
-A planilha tem as colunas `local,data,inicio,fim,publicador1,publicador2`, com horários locais exatamente como aparecem no Hourglass (ex.: 05:45, 08:00, 16:00). O `sync` casa cada designação por local, data, hora e publicador: quem está na planilha e não está no Hourglass é criado, quem está no Hourglass e saiu da planilha é removido, e o que não mudou fica intocado. Planilhas `.xlsx` são convertidas pelo LibreOffice, então `soffice` precisa estar instalado.
+A planilha é a fonte da verdade. O `sync` compara o mês inteiro coberto pela planilha com o Hourglass e deixa o site igual ao arquivo: cria o que está na planilha e falta no site, troca o que mudou (local, data, início, fim ou publicador) e remove o que saiu da planilha. Linha com `publicador1` e `publicador2` vazios vira uma vaga sem publicador, do mesmo jeito que aparece na tela.
+
+Remoções só acontecem com `--prune`; sem essa flag o comando apenas cria e atualiza. Use `--prune` quando a planilha estiver fechada, porque nesse modo tudo que não estiver nela no mês é apagado.
+
+A planilha tem as colunas `local,data,inicio,fim,publicador1,publicador2`, com horários iguais aos do Hourglass (ex.: 05:45, 08:00, 16:00). Planilhas `.xlsx` são convertidas pelo LibreOffice, então `soffice` precisa estar instalado.
 
 Para manter a planilha sincronizada, use o script `scripts/cart-sync.sh` (instalado em `~/.local/bin/hourglass-cart-sync`) com um timer do sistema:
 
