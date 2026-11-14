@@ -113,7 +113,9 @@ func Desired(rows []Row, locations []hourglass.PWLocation, users []hourglass.Use
 			continue
 		}
 		datetime := time.Date(row.Date.Year(), row.Date.Month(), row.Date.Day(), start.Hour(), start.Minute(), 0, 0, time.UTC)
-		for _, name := range []string{row.Publisher1, row.Publisher2} {
+		publishers := []string{row.Publisher1, row.Publisher2}
+		assigned := false
+		for _, name := range publishers {
 			if name == "" {
 				continue
 			}
@@ -122,6 +124,7 @@ func Desired(rows []Row, locations []hourglass.PWLocation, users []hourglass.Use
 				problems = append(problems, *problem)
 				continue
 			}
+			assigned = true
 			entries = append(entries, Entry{
 				Line:          row.Line,
 				LocationID:    location.ID,
@@ -130,6 +133,15 @@ func Desired(rows []Row, locations []hourglass.PWLocation, users []hourglass.Use
 				DurationHours: end.Sub(start).Hours(),
 				PublisherID:   publisher.ID,
 				PublisherName: publisherName(publisher),
+			})
+		}
+		if !assigned {
+			entries = append(entries, Entry{
+				Line:          row.Line,
+				LocationID:    location.ID,
+				LocationName:  location.Name,
+				Datetime:      datetime,
+				DurationHours: end.Sub(start).Hours(),
 			})
 		}
 	}

@@ -48,14 +48,13 @@ func TestParseReportsInvalidLinesTogether(t *testing.T) {
 	source := "local,data,inicio,fim,publicador1,publicador2\n" +
 		"Local Exemplo 2,31/02/2026,09:00,11:00,Pessoa Exemplo A,\n" +
 		"Local Exemplo 2,02/12/2026,9h,11:00,Pessoa Exemplo A,\n" +
-		"Local Exemplo 2,02/12/2026,11:00,09:00,Pessoa Exemplo A,\n" +
-		"Local Exemplo 2,02/12/2026,09:00,11:00,,\n"
+		"Local Exemplo 2,02/12/2026,11:00,09:00,Pessoa Exemplo A,\n"
 
 	_, err := Parse(strings.NewReader(source))
 	if err == nil {
 		t.Fatal("expected parse error")
 	}
-	for _, want := range []string{"linha 2", "linha 3", "linha 4", "linha 5"} {
+	for _, want := range []string{"linha 2", "linha 3", "linha 4"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error %q should mention %s", err, want)
 		}
