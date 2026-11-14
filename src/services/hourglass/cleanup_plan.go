@@ -58,9 +58,27 @@ func BuildCleanupPlan(month time.Time, history, target []AVAttendant, users []Us
 		return CleanupPlan{}, fmt.Errorf("history months must be at least 1")
 	}
 
+	plan := newCleanupPlan(month, rules, historyMonths, lgroup)
+	allowed := stringSet(rules.Types)
+	eligible := intSet(rules.EligibleUserIDs)
+	planner := cleanupPlanner{
+		rules:      rules,
+		allowed:    allowed,
+		names:      userDisplayNames(users),
+		historical: countEligible(history, allowed, eligible),
+	}
+	planner.monthCounts, planner.datesByUser = monthlyUsage(target, allowed, eligible)
+	for _, row := range sortedTarget(target) {
+		planner.applyRow(&plan, row)
+	}
+	plan.Confirm = CleanupPlanConfirmToken(plan)
+	return plan, nil
+}
+
+func newCleanupPlan(month time.Time, rules CleanupRules, historyMonths, lgroup int) CleanupPlan {
 	month = time.Date(month.Year(), month.Month(), 1, 0, 0, 0, 0, time.UTC)
 	historyFrom := month.AddDate(0, -historyMonths, 0)
-	plan := CleanupPlan{
+	return CleanupPlan{
 		DryRun:      true,
 		Month:       month.Format("2006-01"),
 		HistoryFrom: historyFrom.Format("2006-01-02"),
@@ -68,21 +86,44 @@ func BuildCleanupPlan(month time.Time, history, target []AVAttendant, users []Us
 		LGroup:      lgroup,
 		RulesDigest: CleanupRulesDigest(rules),
 	}
+}
 
-	allowedTypes := stringSet(rules.Types)
-	eligible := intSet(rules.EligibleUserIDs)
-	userNames := make(map[int]string, len(users))
+func userDisplayNames(users []User) map[int]string {
+	index := mapUsers(users)
+	names := make(map[int]string, len(users))
 	for _, user := range users {
-		userNames[user.ID] = LookupUserName(mapUsers(users), user.ID)
+		names[user.ID] = LookupUserName(index, user.ID)
 	}
+	return names
+}
 
-	historicalCounts := make(map[int]int)
-	for _, row := range history {
-		if row.Assignee != nil && allowedTypes[row.Type] && eligible[*row.Assignee] {
-			historicalCounts[*row.Assignee]++
+func countEligible(rows []AVAttendant, allowed map[string]bool, eligible map[int]bool) map[int]int {
+	counts := make(map[int]int)
+	for _, row := range rows {
+		if row.Assignee != nil && allowed[row.Type] && eligible[*row.Assignee] {
+			counts[*row.Assignee]++
 		}
 	}
+	return counts
+}
 
+func monthlyUsage(rows []AVAttendant, allowed map[string]bool, eligible map[int]bool) (map[int]int, map[int]map[string]bool) {
+	counts := make(map[int]int)
+	dates := make(map[int]map[string]bool)
+	for _, row := range rows {
+		if row.Assignee == nil || !allowed[row.Type] || !eligible[*row.Assignee] {
+			continue
+		}
+		counts[*row.Assignee]++
+		if dates[*row.Assignee] == nil {
+			dates[*row.Assignee] = map[string]bool{}
+		}
+		dates[*row.Assignee][row.Date] = true
+	}
+	return counts, dates
+}
+
+func sortedTarget(target []AVAttendant) []AVAttendant {
 	rows := append([]AVAttendant(nil), target...)
 	sort.Slice(rows, func(i, j int) bool {
 		if rows[i].Date != rows[j].Date {
@@ -93,47 +134,42 @@ func BuildCleanupPlan(month time.Time, history, target []AVAttendant, users []Us
 		}
 		return rows[i].ID < rows[j].ID
 	})
+	return rows
+}
 
-	monthCounts := make(map[int]int)
-	datesByUser := make(map[int]map[string]bool)
-	for _, row := range rows {
-		if row.Assignee == nil || !allowedTypes[row.Type] || !eligible[*row.Assignee] {
-			continue
-		}
-		monthCounts[*row.Assignee]++
-		if datesByUser[*row.Assignee] == nil {
-			datesByUser[*row.Assignee] = map[string]bool{}
-		}
-		datesByUser[*row.Assignee][row.Date] = true
-	}
+type cleanupPlanner struct {
+	rules       CleanupRules
+	allowed     map[string]bool
+	names       map[int]string
+	historical  map[int]int
+	monthCounts map[int]int
+	datesByUser map[int]map[string]bool
+}
 
-	for _, row := range rows {
-		if reason := cleanupSkipReason(row, allowedTypes); reason != "" {
-			plan.Skipped = append(plan.Skipped, CleanupSkipped{SlotID: row.ID, Date: row.Date, Type: row.Type, Reason: reason})
-			continue
-		}
-		candidate, ok := chooseCleanupCandidate(rules, historicalCounts, monthCounts, datesByUser, row.Date)
-		if !ok {
-			plan.Skipped = append(plan.Skipped, CleanupSkipped{SlotID: row.ID, Date: row.Date, Type: row.Type, Reason: "no_eligible_candidate"})
-			continue
-		}
-		if row.UpdatedAt.IsZero() {
-			plan.Skipped = append(plan.Skipped, CleanupSkipped{SlotID: row.ID, Date: row.Date, Type: row.Type, Reason: "missing_version"})
-			continue
-		}
-		plan.Mutations = append(plan.Mutations, CleanupMutation{
-			SlotID: row.ID, Date: row.Date, Type: row.Type, Slot: row.Slot,
-			AssigneeID: candidate, AssigneeName: userNames[candidate],
-			UpdatedAt: row.UpdatedAt.UTC().Format(time.RFC3339Nano),
-		})
-		monthCounts[candidate]++
-		if datesByUser[candidate] == nil {
-			datesByUser[candidate] = map[string]bool{}
-		}
-		datesByUser[candidate][row.Date] = true
+func (p *cleanupPlanner) applyRow(plan *CleanupPlan, row AVAttendant) {
+	if reason := cleanupSkipReason(row, p.allowed); reason != "" {
+		plan.Skipped = append(plan.Skipped, CleanupSkipped{SlotID: row.ID, Date: row.Date, Type: row.Type, Reason: reason})
+		return
 	}
-	plan.Confirm = CleanupPlanConfirmToken(plan)
-	return plan, nil
+	candidate, ok := chooseCleanupCandidate(p.rules, p.historical, p.monthCounts, p.datesByUser, row.Date)
+	if !ok {
+		plan.Skipped = append(plan.Skipped, CleanupSkipped{SlotID: row.ID, Date: row.Date, Type: row.Type, Reason: "no_eligible_candidate"})
+		return
+	}
+	if row.UpdatedAt.IsZero() {
+		plan.Skipped = append(plan.Skipped, CleanupSkipped{SlotID: row.ID, Date: row.Date, Type: row.Type, Reason: "missing_version"})
+		return
+	}
+	plan.Mutations = append(plan.Mutations, CleanupMutation{
+		SlotID: row.ID, Date: row.Date, Type: row.Type, Slot: row.Slot,
+		AssigneeID: candidate, AssigneeName: p.names[candidate],
+		UpdatedAt: row.UpdatedAt.UTC().Format(time.RFC3339Nano),
+	})
+	p.monthCounts[candidate]++
+	if p.datesByUser[candidate] == nil {
+		p.datesByUser[candidate] = map[string]bool{}
+	}
+	p.datesByUser[candidate][row.Date] = true
 }
 
 func validateCleanupRules(rules CleanupRules) error {

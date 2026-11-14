@@ -186,83 +186,104 @@ func blank(record []string) bool {
 
 // Build resolves names against Hourglass and reports every blocking problem.
 func Build(rows []Row, locations []hourglass.PWLocation, users []hourglass.User, existing []hourglass.PWSlot) Plan {
-	var plan Plan
-	taken := make(map[string]hourglass.PWSlot, len(existing))
-	for _, slot := range existing {
-		taken[slotKey(slot.LocationID, slot.Datetime)] = slot
+	builder := planBuilder{
+		locations: locations,
+		users:     users,
+		taken:     make(map[string]struct{}, len(existing)),
+		seen:      make(map[string]int),
+		busy:      make(map[string]int),
 	}
-
-	seen := make(map[string]int)
-	busy := make(map[string]int)
+	for _, slot := range existing {
+		builder.taken[slotKey(slot.LocationID, slot.Datetime)] = struct{}{}
+	}
 	for _, row := range rows {
-		location, problem := resolveLocation(row, locations)
-		if problem != nil {
-			plan.Problems = append(plan.Problems, *problem)
+		builder.addRow(row)
+	}
+	sort.SliceStable(builder.plan.Entries, func(i, j int) bool {
+		if builder.plan.Entries[i].Datetime.Equal(builder.plan.Entries[j].Datetime) {
+			return builder.plan.Entries[i].LocationName < builder.plan.Entries[j].LocationName
+		}
+		return builder.plan.Entries[i].Datetime.Before(builder.plan.Entries[j].Datetime)
+	})
+	return builder.plan
+}
+
+type planBuilder struct {
+	plan      Plan
+	locations []hourglass.PWLocation
+	users     []hourglass.User
+	taken     map[string]struct{}
+	seen      map[string]int
+	busy      map[string]int
+}
+
+func (b *planBuilder) addRow(row Row) {
+	location, problem := resolveLocation(row, b.locations)
+	if problem != nil {
+		b.plan.Problems = append(b.plan.Problems, *problem)
+		return
+	}
+	start, _ := time.Parse("15:04", row.Start)
+	end, _ := time.Parse("15:04", row.End)
+	datetime := time.Date(row.Date.Year(), row.Date.Month(), row.Date.Day(), start.Hour(), start.Minute(), 0, 0, time.UTC)
+	duration := end.Sub(start).Hours()
+
+	assigned := false
+	for _, name := range []string{row.Publisher1, row.Publisher2} {
+		if name == "" {
 			continue
 		}
-		start, _ := time.Parse("15:04", row.Start)
-		end, _ := time.Parse("15:04", row.End)
-		datetime := time.Date(row.Date.Year(), row.Date.Month(), row.Date.Day(), start.Hour(), start.Minute(), 0, 0, time.UTC)
-
-		assigned := false
-		for _, name := range []string{row.Publisher1, row.Publisher2} {
-			if name == "" {
-				continue
-			}
-			assigned = true
-			publisher, problem := resolvePublisher(row.Line, name, users)
-			if problem != nil {
-				plan.Problems = append(plan.Problems, *problem)
-				continue
-			}
-			slotID := fmt.Sprintf("%d|%s|%s|%d", location.ID, row.Date.Format(time.DateOnly), row.Start, publisher.ID)
-			if first, duplicate := seen[slotID]; duplicate {
-				plan.Problems = append(plan.Problems, Problem{row.Line, fmt.Sprintf(
-					"repetido: %s já tem %s em %s %s (linha %d)",
-					location.Name, publisherName(publisher), row.Date.Format(dateLayoutBR), row.Start, first)})
-				continue
-			}
-			seen[slotID] = row.Line
-			if _, exists := taken[slotKey(location.ID, datetime.Format(time.RFC3339))]; exists {
-				plan.Problems = append(plan.Problems, Problem{row.Line, fmt.Sprintf(
-					"já existe programação em %s para %s %s",
-					location.Name, row.Date.Format(dateLayoutBR), row.Start)})
-			}
-			publisherSlot := fmt.Sprintf("%d|%s|%s", publisher.ID, row.Date.Format(time.DateOnly), row.Start)
-			if first, clash := busy[publisherSlot]; clash {
-				plan.Problems = append(plan.Problems, Problem{row.Line, fmt.Sprintf(
-					"%s já está escalado no mesmo horário (linha %d)", publisherName(publisher), first)})
-				continue
-			}
-			busy[publisherSlot] = row.Line
-
-			plan.Entries = append(plan.Entries, Entry{
-				Line:          row.Line,
-				LocationID:    location.ID,
-				LocationName:  location.Name,
-				Datetime:      datetime,
-				DurationHours: end.Sub(start).Hours(),
-				PublisherID:   publisher.ID,
-				PublisherName: publisherName(publisher),
-			})
-		}
-		if !assigned {
-			plan.Entries = append(plan.Entries, Entry{
-				Line:          row.Line,
-				LocationID:    location.ID,
-				LocationName:  location.Name,
-				Datetime:      datetime,
-				DurationHours: end.Sub(start).Hours(),
-			})
-		}
+		assigned = true
+		b.addPublisher(row, location, datetime, duration, name)
 	}
-	sort.SliceStable(plan.Entries, func(i, j int) bool {
-		if plan.Entries[i].Datetime.Equal(plan.Entries[j].Datetime) {
-			return plan.Entries[i].LocationName < plan.Entries[j].LocationName
-		}
-		return plan.Entries[i].Datetime.Before(plan.Entries[j].Datetime)
+	if !assigned {
+		b.plan.Entries = append(b.plan.Entries, Entry{
+			Line:          row.Line,
+			LocationID:    location.ID,
+			LocationName:  location.Name,
+			Datetime:      datetime,
+			DurationHours: duration,
+		})
+	}
+}
+
+func (b *planBuilder) addPublisher(row Row, location hourglass.PWLocation, datetime time.Time, duration float64, name string) {
+	publisher, problem := resolvePublisher(row.Line, name, b.users)
+	if problem != nil {
+		b.plan.Problems = append(b.plan.Problems, *problem)
+		return
+	}
+	entryKey := fmt.Sprintf("%d|%s|%s|%d", location.ID, row.Date.Format(time.DateOnly), row.Start, publisher.ID)
+	if first, duplicate := b.seen[entryKey]; duplicate {
+		b.plan.Problems = append(b.plan.Problems, Problem{row.Line, fmt.Sprintf(
+			"repetido: %s já tem %s em %s %s (linha %d)",
+			location.Name, publisherName(publisher), row.Date.Format(dateLayoutBR), row.Start, first)})
+		return
+	}
+	b.seen[entryKey] = row.Line
+
+	if _, exists := b.taken[slotKey(location.ID, datetime.Format(time.RFC3339))]; exists {
+		b.plan.Problems = append(b.plan.Problems, Problem{row.Line, fmt.Sprintf(
+			"já existe programação em %s para %s %s", location.Name, row.Date.Format(dateLayoutBR), row.Start)})
+	}
+
+	busyKey := fmt.Sprintf("%d|%s|%s", publisher.ID, row.Date.Format(time.DateOnly), row.Start)
+	if first, clash := b.busy[busyKey]; clash {
+		b.plan.Problems = append(b.plan.Problems, Problem{row.Line, fmt.Sprintf(
+			"%s já está escalado no mesmo horário (linha %d)", publisherName(publisher), first)})
+		return
+	}
+	b.busy[busyKey] = row.Line
+
+	b.plan.Entries = append(b.plan.Entries, Entry{
+		Line:          row.Line,
+		LocationID:    location.ID,
+		LocationName:  location.Name,
+		Datetime:      datetime,
+		DurationHours: duration,
+		PublisherID:   publisher.ID,
+		PublisherName: publisherName(publisher),
 	})
-	return plan
 }
 
 func slotKey(locationID int, datetime string) string {

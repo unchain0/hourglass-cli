@@ -250,31 +250,31 @@ func encodeECDSASignature(r, s *big.Int) ([]byte, error) {
 	}{R: r, S: s})
 }
 
-func (a *Authenticator) finishAuthentication(assertion *AssertionResponse) (*AuthTokens, error) {
+// finishRequest builds the authenticated request that completes the ceremony.
+func (a *Authenticator) finishRequest(assertion *AssertionResponse) (*http.Request, error) {
 	url := fmt.Sprintf("%s%s/login/finish", a.baseURL, webAuthnAPIPath)
-
 	body, err := json.Marshal(assertion)
 	if err != nil {
 		return nil, fmt.Errorf("marshal assertion: %w", err)
 	}
-
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
-
 	req.Header.Set("Content-Type", "application/json")
-
 	if a.xsrfToken != "" {
 		req.Header.Set(xsrfTokenHeader, a.xsrfToken)
 	}
-
 	if a.hgLogin != "" {
-		cookie := &http.Cookie{
-			Name:  "hglogin",
-			Value: a.hgLogin,
-		}
-		req.AddCookie(cookie)
+		req.AddCookie(&http.Cookie{Name: "hglogin", Value: a.hgLogin})
+	}
+	return req, nil
+}
+
+func (a *Authenticator) finishAuthentication(assertion *AssertionResponse) (*AuthTokens, error) {
+	req, err := a.finishRequest(assertion)
+	if err != nil {
+		return nil, err
 	}
 
 	resp, err := a.httpClient.Do(req)

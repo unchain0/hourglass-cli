@@ -250,32 +250,10 @@ func enableWebAuthnTokenManager(apiClient *hourglass.Client, cfg *config.Config)
 		return false
 	}
 
-	credentialsAvailable := false
-	if credentialsPath != "" {
-		_, statErr := os.Stat(credentialsPath)
-		switch {
-		case statErr == nil:
-			credentialsAvailable = true
-		case errors.Is(statErr, os.ErrNotExist) && cfg.HourglassXSRFToken != "" && cfg.HourglassHGLogin != "":
-			if err := bootstrapWebAuthnCredential(credentialsPath, cfg.HourglassURL, cfg.HourglassXSRFToken, cfg.HourglassHGLogin); err != nil {
-				slog.Warn("failed to bootstrap automatic authentication from configured session", "path", credentialsPath, "error", err)
-				return false
-			}
-			credentialsAvailable = true
-			slog.Info("registered WebAuthn credential from configured Hourglass session", "path", credentialsPath)
-		case errors.Is(statErr, os.ErrNotExist) && profileDir == "":
-			slog.Info("authentication credentials not found, using static token flow", "path", credentialsPath)
-			return false
-		case errors.Is(statErr, os.ErrNotExist):
-			slog.Info("webauthn credentials not found, continuing with persistent browser profile auth", "path", credentialsPath, "profile_dir", profileDir)
-		case profileDir == "":
-			slog.Warn("failed to inspect webauthn credentials path", "path", credentialsPath, "error", statErr)
-			return false
-		default:
-			slog.Warn("failed to inspect webauthn credentials path, continuing with persistent browser profile auth", "path", credentialsPath, "profile_dir", profileDir, "error", statErr)
-		}
+	credentialsAvailable, proceed := prepareWebAuthnCredentials(credentialsPath, profileDir, cfg)
+	if !proceed {
+		return false
 	}
-
 	if err := enableWebAuthnClient(apiClient, credentialsPath); err != nil {
 		slog.Warn("failed to enable automatic authentication token manager", "path", credentialsPath, "profile_dir", profileDir, "error", err)
 		return false
@@ -283,6 +261,43 @@ func enableWebAuthnTokenManager(apiClient *hourglass.Client, cfg *config.Config)
 
 	slog.Info("enabled automatic authentication token manager", "credentials_path", credentialsPath, "credentials_available", credentialsAvailable, "browser_profile_dir", profileDir)
 	return true
+}
+
+func bootstrapMissingCredential(credentialsPath string, cfg *config.Config) bool {
+	if err := bootstrapWebAuthnCredential(credentialsPath, cfg.HourglassURL, cfg.HourglassXSRFToken, cfg.HourglassHGLogin); err != nil {
+		slog.Warn("failed to bootstrap automatic authentication from configured session", "path", credentialsPath, "error", err)
+		return false
+	}
+	slog.Info("registered WebAuthn credential from configured Hourglass session", "path", credentialsPath)
+	return true
+}
+
+// prepareWebAuthnCredentials bootstraps the credential when possible and reports
+// whether the caller should enable the token manager.
+func prepareWebAuthnCredentials(credentialsPath, profileDir string, cfg *config.Config) (bool, bool) {
+	if credentialsPath == "" {
+		return false, true
+	}
+	_, statErr := os.Stat(credentialsPath)
+	switch {
+	case statErr == nil:
+		return true, true
+	case errors.Is(statErr, os.ErrNotExist) && cfg.HourglassXSRFToken != "" && cfg.HourglassHGLogin != "":
+		bootstrapped := bootstrapMissingCredential(credentialsPath, cfg)
+		return bootstrapped, bootstrapped
+	case errors.Is(statErr, os.ErrNotExist) && profileDir == "":
+		slog.Info("authentication credentials not found, using static token flow", "path", credentialsPath)
+		return false, false
+	case errors.Is(statErr, os.ErrNotExist):
+		slog.Info("webauthn credentials not found, continuing with persistent browser profile auth", "path", credentialsPath, "profile_dir", profileDir)
+		return false, true
+	case profileDir == "":
+		slog.Warn("failed to inspect webauthn credentials path", "path", credentialsPath, "error", statErr)
+		return false, false
+	default:
+		slog.Warn("failed to inspect webauthn credentials path, continuing with persistent browser profile auth", "path", credentialsPath, "profile_dir", profileDir, "error", statErr)
+		return false, true
+	}
 }
 
 var runOnceFn = func(ctx context.Context, cfg *config.Config, telemetryClient *telemetry.Client, analyzer *hourglass.APIAnalyzer, store *preferences.Store) error {

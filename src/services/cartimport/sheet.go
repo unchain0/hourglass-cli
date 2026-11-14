@@ -22,22 +22,39 @@ type ExportRow struct {
 // ToSheet builds spreadsheet rows from live slots, grouping the publishers that
 // share a location and hour. The hours match the slot datetime directly.
 func ToSheet(slots []hourglass.PWSlot, locations []hourglass.PWLocation, users []hourglass.User) ([]ExportRow, []Problem) {
+	names := userNames(users)
+	places := locationNames(locations)
+	grouped, problems := groupSlots(slots, names)
+	rows := sheetRows(grouped, places)
+	sortSheet(rows)
+	return rows, problems
+}
+
+type slotGroup struct {
+	location int
+	at       time.Time
+	end      time.Time
+	people   []string
+}
+
+func userNames(users []hourglass.User) map[int]string {
 	names := make(map[int]string, len(users))
 	for _, user := range users {
 		names[user.ID] = publisherName(user)
 	}
-	place := make(map[int]string, len(locations))
-	for _, location := range locations {
-		place[location.ID] = location.Name
-	}
+	return names
+}
 
-	type group struct {
-		location int
-		at       time.Time
-		end      time.Time
-		people   []string
+func locationNames(locations []hourglass.PWLocation) map[int]string {
+	places := make(map[int]string, len(locations))
+	for _, location := range locations {
+		places[location.ID] = location.Name
 	}
-	grouped := make(map[string]*group, len(slots))
+	return places
+}
+
+func groupSlots(slots []hourglass.PWSlot, names map[int]string) (map[string]*slotGroup, []Problem) {
+	grouped := make(map[string]*slotGroup, len(slots))
 	var problems []Problem
 	for _, slot := range slots {
 		at, err := time.Parse(time.RFC3339, slot.Datetime)
@@ -48,7 +65,7 @@ func ToSheet(slots []hourglass.PWSlot, locations []hourglass.PWLocation, users [
 		key := fmt.Sprintf("%d|%s|%s", slot.LocationID, at.Format(time.RFC3339), slot.Duration)
 		entry := grouped[key]
 		if entry == nil {
-			entry = &group{
+			entry = &slotGroup{
 				location: slot.LocationID,
 				at:       at,
 				end:      at.Add(time.Duration(durationHours(slot.Duration) * float64(time.Hour))),
@@ -59,12 +76,15 @@ func ToSheet(slots []hourglass.PWSlot, locations []hourglass.PWLocation, users [
 			entry.people = append(entry.people, names[*slot.AssigneeID])
 		}
 	}
+	return grouped, problems
+}
 
+func sheetRows(grouped map[string]*slotGroup, places map[int]string) []ExportRow {
 	rows := make([]ExportRow, 0, len(grouped))
 	for _, entry := range grouped {
 		sort.Strings(entry.people)
 		row := ExportRow{
-			Location: place[entry.location],
+			Location: places[entry.location],
 			Date:     entry.at.Format(dateLayoutBR),
 			Start:    entry.at.Format("15:04"),
 			End:      entry.end.Format("15:04"),
@@ -77,6 +97,10 @@ func ToSheet(slots []hourglass.PWSlot, locations []hourglass.PWLocation, users [
 		}
 		rows = append(rows, row)
 	}
+	return rows
+}
+
+func sortSheet(rows []ExportRow) {
 	sort.Slice(rows, func(i, j int) bool {
 		if rows[i].Date == rows[j].Date {
 			return rows[i].Start < rows[j].Start
@@ -88,7 +112,6 @@ func ToSheet(slots []hourglass.PWSlot, locations []hourglass.PWLocation, users [
 		}
 		return first.Before(second)
 	})
-	return rows, problems
 }
 
 // Desired turns spreadsheet rows into the slots the sheet asks for. It never
@@ -97,53 +120,58 @@ func Desired(rows []Row, locations []hourglass.PWLocation, users []hourglass.Use
 	var entries []Entry
 	var problems []Problem
 	for _, row := range rows {
-		location, problem := resolveLocation(row, locations)
+		rowEntries, rowProblems := desiredRow(row, locations, users)
+		entries = append(entries, rowEntries...)
+		problems = append(problems, rowProblems...)
+	}
+	return entries, problems
+}
+
+func desiredRow(row Row, locations []hourglass.PWLocation, users []hourglass.User) ([]Entry, []Problem) {
+	location, problem := resolveLocation(row, locations)
+	if problem != nil {
+		return nil, []Problem{*problem}
+	}
+	start, err := parseClock(row.Start)
+	if err != nil {
+		return nil, []Problem{{row.Line, fmt.Sprintf("início: %v", err)}}
+	}
+	end, err := parseClock(row.End)
+	if err != nil {
+		return nil, []Problem{{row.Line, fmt.Sprintf("fim: %v", err)}}
+	}
+	datetime := time.Date(row.Date.Year(), row.Date.Month(), row.Date.Day(), start.Hour(), start.Minute(), 0, 0, time.UTC)
+	duration := end.Sub(start).Hours()
+
+	var entries []Entry
+	var problems []Problem
+	for _, name := range []string{row.Publisher1, row.Publisher2} {
+		if name == "" {
+			continue
+		}
+		publisher, problem := resolvePublisher(row.Line, name, users)
 		if problem != nil {
 			problems = append(problems, *problem)
 			continue
 		}
-		start, err := parseClock(row.Start)
-		if err != nil {
-			problems = append(problems, Problem{row.Line, fmt.Sprintf("início: %v", err)})
-			continue
-		}
-		end, err := parseClock(row.End)
-		if err != nil {
-			problems = append(problems, Problem{row.Line, fmt.Sprintf("fim: %v", err)})
-			continue
-		}
-		datetime := time.Date(row.Date.Year(), row.Date.Month(), row.Date.Day(), start.Hour(), start.Minute(), 0, 0, time.UTC)
-		publishers := []string{row.Publisher1, row.Publisher2}
-		assigned := false
-		for _, name := range publishers {
-			if name == "" {
-				continue
-			}
-			publisher, problem := resolvePublisher(row.Line, name, users)
-			if problem != nil {
-				problems = append(problems, *problem)
-				continue
-			}
-			assigned = true
-			entries = append(entries, Entry{
-				Line:          row.Line,
-				LocationID:    location.ID,
-				LocationName:  location.Name,
-				Datetime:      datetime,
-				DurationHours: end.Sub(start).Hours(),
-				PublisherID:   publisher.ID,
-				PublisherName: publisherName(publisher),
-			})
-		}
-		if !assigned {
-			entries = append(entries, Entry{
-				Line:          row.Line,
-				LocationID:    location.ID,
-				LocationName:  location.Name,
-				Datetime:      datetime,
-				DurationHours: end.Sub(start).Hours(),
-			})
-		}
+		entries = append(entries, Entry{
+			Line:          row.Line,
+			LocationID:    location.ID,
+			LocationName:  location.Name,
+			Datetime:      datetime,
+			DurationHours: duration,
+			PublisherID:   publisher.ID,
+			PublisherName: publisherName(publisher),
+		})
+	}
+	if len(entries) == 0 && len(problems) == 0 {
+		entries = append(entries, Entry{
+			Line:          row.Line,
+			LocationID:    location.ID,
+			LocationName:  location.Name,
+			Datetime:      datetime,
+			DurationHours: duration,
+		})
 	}
 	return entries, problems
 }

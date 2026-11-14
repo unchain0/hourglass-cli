@@ -12,6 +12,7 @@ linters:
     - ineffassign
     - misspell
     - gocognit
+    - gocyclo
     - dupl
     - goconst
     - unconvert
@@ -19,7 +20,9 @@ linters:
     - nakedret
   settings:
     gocognit:
-      min-complexity: 25
+      min-complexity: 15
+    gocyclo:
+      min-complexity: 10
     errcheck:
       exclude-functions:
         - (*encoding/json.Encoder).Encode
@@ -45,6 +48,12 @@ linters:
   exclusions:
     presets: []
     rules:
+      # Test functions are scenario scripts with table-driven branches; the
+      # complexity gate covers production code.
+      - path: _test\.go
+        linters:
+          - gocognit
+          - gocyclo
       - text: 'G304:'
         linters:
           - gosec
@@ -144,3 +153,4 @@ linters:
           - errcheck
           - misspell
           - goconst
+

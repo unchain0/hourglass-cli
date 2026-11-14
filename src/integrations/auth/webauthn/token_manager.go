@@ -131,23 +131,9 @@ func WithTokensPath(path string) TokenManagerOption {
 
 // NewTokenManager creates a new token manager for automatic renewal.
 func NewTokenManager(storagePath, baseURL string, opts ...TokenManagerOption) (*TokenManager, error) {
-	if storagePath == "" {
-		storagePath = os.Getenv("WEBAUTHN_CREDENTIALS_PATH")
-		if storagePath == "" {
-			homeDir, err := osUserHomeDirTokenManager()
-			if err == nil {
-				storagePath = filepath.Join(homeDir, ".hourglass-rpa", "webauthn-credentials.json")
-			}
-		}
-	}
-
-	tokensPath := os.Getenv("WEBAUTHN_TOKENS_PATH")
-	if tokensPath == "" {
-		tokensPath = filepath.Join(filepath.Dir(storagePath), "auth-tokens.json")
-	}
-
+	storagePath = resolveStoragePath(storagePath)
+	tokensPath := resolveTokensPath(storagePath)
 	browserProfileDir := os.Getenv("CHROME_PROFILE_DIR")
-
 	baseURL = normalizeWebAuthnBaseURL(baseURL)
 
 	authenticator, err := NewAuthenticator(storagePath, baseURL)
@@ -324,6 +310,28 @@ func (tm *TokenManager) renewTokens(force bool) (*AuthTokens, error) {
 	return newTokens, nil
 }
 
+// resolveStoragePath picks the credentials path, falling back to the default directory.
+func resolveStoragePath(storagePath string) string {
+	if storagePath != "" {
+		return storagePath
+	}
+	if fromEnv := os.Getenv("WEBAUTHN_CREDENTIALS_PATH"); fromEnv != "" {
+		return fromEnv
+	}
+	homeDir, err := osUserHomeDirTokenManager()
+	if err != nil {
+		return storagePath
+	}
+	return filepath.Join(homeDir, ".hourglass-rpa", "webauthn-credentials.json")
+}
+
+func resolveTokensPath(storagePath string) string {
+	if fromEnv := os.Getenv("WEBAUTHN_TOKENS_PATH"); fromEnv != "" {
+		return fromEnv
+	}
+	return filepath.Join(filepath.Dir(storagePath), "auth-tokens.json")
+}
+
 func normalizeWebAuthnBaseURL(baseURL string) string {
 	trimmed := strings.TrimRight(baseURL, "/")
 	if trimmed == "" {
@@ -421,38 +429,52 @@ func (tm *TokenManager) authenticateWithFallback(currentTokens ...*AuthTokens) (
 
 func (tm *TokenManager) authenticateWithCurrentTokens(currentTokens *AuthTokens) (*AuthTokens, error) {
 	hasCredentials := tm.HasWebAuthnCredentials()
-	preferWebAuthn := hasCredentials
-	slog.Info("attempting authentication fallback", "has_browser_auth", tm.browserAuth != nil, "has_credentials", hasCredentials, "prefer_webauthn", preferWebAuthn)
-	if IsHeadlessEnvironment() && !hasCredentials && tm.browserAuth != nil && tm.browserProfileDir != "" && !browserProfileHasCookieStore(tm.browserProfileDir) {
-		return nil, fmt.Errorf("persistent browser profile has no cookie store at %s; run setup-auth and import the generated authentication files before starting the headless service", tm.browserProfileDir)
+	slog.Info("attempting authentication fallback", "has_browser_auth", tm.browserAuth != nil, "has_credentials", hasCredentials, "prefer_webauthn", hasCredentials)
+	if err := tm.headlessProfileProblem(hasCredentials); err != nil {
+		return nil, err
 	}
-
 	if currentTokens != nil {
 		authenticatorSetCookies(tm.authenticator, currentTokens.XSRFToken, currentTokens.HGLogin)
 	}
-
-	if preferWebAuthn {
-		tokens, err := tm.authenticateWithWebAuthn(hasCredentials)
-		if err == nil {
-			return tokens, nil
-		}
-		if tm.browserAuth == nil {
-			return nil, err
-		}
-		slog.Warn("WebAuthn authentication failed, falling back to browser profile auth", "error", err)
-		return tm.authenticateWithBrowser()
+	if hasCredentials {
+		return tm.webAuthnFirst(hasCredentials)
 	}
+	return tm.browserFirst(hasCredentials)
+}
 
-	if tm.browserAuth != nil {
-		tokens, err := tm.authenticateWithBrowser()
-		if err == nil {
-			return tokens, nil
-		}
-		slog.Error("browser authentication failed, falling back to WebAuthn", "error", err)
-	} else {
+// headlessProfileProblem rejects a headless run whose browser profile has no cookie store.
+func (tm *TokenManager) headlessProfileProblem(hasCredentials bool) error {
+	if !IsHeadlessEnvironment() || hasCredentials || tm.browserAuth == nil || tm.browserProfileDir == "" {
+		return nil
+	}
+	if browserProfileHasCookieStore(tm.browserProfileDir) {
+		return nil
+	}
+	return fmt.Errorf("persistent browser profile has no cookie store at %s; run setup-auth and import the generated authentication files before starting the headless service", tm.browserProfileDir)
+}
+
+func (tm *TokenManager) webAuthnFirst(hasCredentials bool) (*AuthTokens, error) {
+	tokens, err := tm.authenticateWithWebAuthn(hasCredentials)
+	if err == nil {
+		return tokens, nil
+	}
+	if tm.browserAuth == nil {
+		return nil, err
+	}
+	slog.Warn("WebAuthn authentication failed, falling back to browser profile auth", "error", err)
+	return tm.authenticateWithBrowser()
+}
+
+func (tm *TokenManager) browserFirst(hasCredentials bool) (*AuthTokens, error) {
+	if tm.browserAuth == nil {
 		slog.Info("browser auth disabled (headless environment), using WebAuthn only")
+		return tm.authenticateWithWebAuthn(hasCredentials)
 	}
-
+	tokens, err := tm.authenticateWithBrowser()
+	if err == nil {
+		return tokens, nil
+	}
+	slog.Error("browser authentication failed, falling back to WebAuthn", "error", err)
 	return tm.authenticateWithWebAuthn(hasCredentials)
 }
 
