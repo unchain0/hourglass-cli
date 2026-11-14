@@ -190,14 +190,37 @@ func EnrichMeetingsWithAssignments(
 	notifications []Notification,
 	users map[int]User,
 ) []MeetingView {
-	titles := PartTitlesFromMeetings(meetings)
+	byDate := assignmentsByDate(notifications, PartTitlesFromMeetings(meetings), users)
+	perDate := meetingsPerDate(meetings)
+
+	state := enrichState{
+		perDate: perDate,
+		claimed: make(map[string]map[int]struct{}, len(meetings)),
+		tookAll: make(map[string]bool, len(meetings)),
+		seen:    make(map[string]bool, len(meetings)),
+	}
+	out := make([]MeetingView, 0, len(meetings))
+	for _, meeting := range meetings {
+		out = append(out, state.meetingView(meeting, byDate))
+	}
+	return state.withLeftovers(out, byDate)
+}
+
+type enrichState struct {
+	perDate map[string]int
+	claimed map[string]map[int]struct{}
+	tookAll map[string]bool
+	seen    map[string]bool
+}
+
+func assignmentsByDate(notifications []Notification, titles map[int]string, users map[int]User) map[string][]MMAssignmentView {
 	byDate := make(map[string][]MMAssignmentView)
 	for _, notif := range notifications {
 		if notif.Type != "" && notif.Type != "mm" {
 			// Keep non-mm rows out of the midweek view when a mixed feed is passed.
 			continue
 		}
-		view := MMAssignmentView{
+		byDate[notif.Date] = append(byDate[notif.Date], MMAssignmentView{
 			Date:         notif.Date,
 			PartID:       notif.Part,
 			Title:        assignmentTitle(notif, titles),
@@ -206,76 +229,80 @@ func EnrichMeetingsWithAssignments(
 			AssigneeName: LookupUserName(users, notif.Assignee),
 			Status:       notif.Status,
 			Classroom:    notif.Classroom,
-		}
-		byDate[notif.Date] = append(byDate[notif.Date], view)
-	}
-
-	meetingsPerDate := make(map[string]int, len(meetings))
-	for _, meeting := range meetings {
-		meetingsPerDate[meeting.Date]++
-	}
-
-	out := make([]MeetingView, 0, len(meetings))
-	seen := make(map[string]bool, len(meetings))
-	claimedParts := make(map[string]map[int]struct{}, len(meetings))
-	tookAllForDate := make(map[string]bool, len(meetings))
-	for _, meeting := range meetings {
-		seen[meeting.Date] = true
-		parts := meetingPartIDs(meeting)
-		soleOnDate := meetingsPerDate[meeting.Date] == 1
-		assignments := assignmentsForMeeting(byDate[meeting.Date], parts, soleOnDate)
-		if len(parts) == 0 {
-			if soleOnDate && len(assignments) > 0 {
-				tookAllForDate[meeting.Date] = true
-			}
-		} else {
-			claimed := claimedParts[meeting.Date]
-			if claimed == nil {
-				claimed = make(map[int]struct{}, len(parts))
-				claimedParts[meeting.Date] = claimed
-			}
-			for partID := range parts {
-				claimed[partID] = struct{}{}
-			}
-		}
-		out = append(out, MeetingView{
-			Date:        meeting.Date,
-			LGroup:      meeting.LGroup,
-			TGW:         meeting.TGW,
-			FM:          meeting.FM,
-			LAC:         meeting.LAC,
-			Assignments: assignments,
 		})
 	}
-	// Include notification-only dates, plus leftover rows whose parts matched no meeting.
+	return byDate
+}
+
+func meetingsPerDate(meetings []Meeting) map[string]int {
+	perDate := make(map[string]int, len(meetings))
+	for _, meeting := range meetings {
+		perDate[meeting.Date]++
+	}
+	return perDate
+}
+
+func (s *enrichState) meetingView(meeting Meeting, byDate map[string][]MMAssignmentView) MeetingView {
+	s.seen[meeting.Date] = true
+	parts := meetingPartIDs(meeting)
+	soleOnDate := s.perDate[meeting.Date] == 1
+	assignments := assignmentsForMeeting(byDate[meeting.Date], parts, soleOnDate)
+	s.claim(meeting.Date, parts, soleOnDate, len(assignments))
+	return MeetingView{
+		Date:        meeting.Date,
+		LGroup:      meeting.LGroup,
+		TGW:         meeting.TGW,
+		FM:          meeting.FM,
+		LAC:         meeting.LAC,
+		Assignments: assignments,
+	}
+}
+
+func (s *enrichState) claim(date string, parts map[int]struct{}, soleOnDate bool, assignmentCount int) {
+	if len(parts) == 0 {
+		if soleOnDate && assignmentCount > 0 {
+			s.tookAll[date] = true
+		}
+		return
+	}
+	claimed := s.claimed[date]
+	if claimed == nil {
+		claimed = make(map[int]struct{}, len(parts))
+		s.claimed[date] = claimed
+	}
+	for partID := range parts {
+		claimed[partID] = struct{}{}
+	}
+}
+
+// withLeftovers adds notification-only dates and rows whose parts matched no meeting.
+func (s *enrichState) withLeftovers(out []MeetingView, byDate map[string][]MMAssignmentView) []MeetingView {
 	for date, assignments := range byDate {
-		if !seen[date] {
-			out = append(out, MeetingView{
-				Date:        date,
-				Assignments: assignments,
-			})
+		if !s.seen[date] {
+			out = append(out, MeetingView{Date: date, Assignments: assignments})
 			continue
 		}
-		if tookAllForDate[date] {
+		if s.tookAll[date] {
 			continue
 		}
-		claimed := claimedParts[date]
-		var leftovers []MMAssignmentView
-		for _, row := range assignments {
-			if _, ok := claimed[row.PartID]; ok {
-				continue
-			}
-			leftovers = append(leftovers, row)
-		}
+		leftovers := unclaimed(assignments, s.claimed[date])
 		if len(leftovers) == 0 {
 			continue
 		}
-		out = append(out, MeetingView{
-			Date:        date,
-			Assignments: leftovers,
-		})
+		out = append(out, MeetingView{Date: date, Assignments: leftovers})
 	}
 	return out
+}
+
+func unclaimed(assignments []MMAssignmentView, claimed map[int]struct{}) []MMAssignmentView {
+	var leftovers []MMAssignmentView
+	for _, row := range assignments {
+		if _, ok := claimed[row.PartID]; ok {
+			continue
+		}
+		leftovers = append(leftovers, row)
+	}
+	return leftovers
 }
 
 // EnrichWMAssignments resolves assignee names for WM rows.

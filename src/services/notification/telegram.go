@@ -711,39 +711,29 @@ func translateSectionName(lang, sectionName string) string {
 	return i18n.Localize(lang, sectionKey, nil)
 }
 
+// assignmentKeys maps the Hourglass assignment labels to their i18n keys.
+var assignmentKeys = map[string]string{
+	"Audio/Video & Indicators": "assignment_audio_video_indicators",
+	"Video":                    "assignment_video",
+	"Console":                  "assignment_console",
+	"Microphone":               "assignment_microphone",
+	"Attendant":                "assignment_attendant",
+	"Public Witnessing":        "assignment_public_witnessing",
+	"Field Ministry Meeting":   "assignment_field_ministry_meeting",
+	"Bible Reading":            "assignment_bible_reading",
+	"Speaker/Chairman":         "assignment_speaker_chairman",
+	"Student":                  "assignment_student",
+	"Assistant":                "assignment_assistant",
+	"Special Assignment":       "assignment_special_assignment",
+	"Other Assignment":         "assignment_other_assignment",
+}
+
 func translateAssignmentType(lang, assignmentType string) string {
-	assignmentKey := ""
-	switch assignmentType {
-	case "Audio/Video & Indicators":
-		assignmentKey = "assignment_audio_video_indicators"
-	case "Video":
-		assignmentKey = "assignment_video"
-	case "Console":
-		assignmentKey = "assignment_console"
-	case "Microphone":
-		assignmentKey = "assignment_microphone"
-	case "Attendant":
-		assignmentKey = "assignment_attendant"
-	case "Public Witnessing":
-		assignmentKey = "assignment_public_witnessing"
-	case "Field Ministry Meeting":
-		assignmentKey = "assignment_field_ministry_meeting"
-	case "Bible Reading":
-		assignmentKey = "assignment_bible_reading"
-	case "Speaker/Chairman":
-		assignmentKey = "assignment_speaker_chairman"
-	case "Student":
-		assignmentKey = "assignment_student"
-	case "Assistant":
-		assignmentKey = "assignment_assistant"
-	case "Special Assignment":
-		assignmentKey = "assignment_special_assignment"
-	case "Other Assignment":
-		assignmentKey = "assignment_other_assignment"
-	default:
+	key, ok := assignmentKeys[assignmentType]
+	if !ok {
 		return assignmentType
 	}
-	return i18n.Localize(lang, assignmentKey, nil)
+	return i18n.Localize(lang, key, nil)
 }
 
 func (t *TelegramNotifier) handleWhoAmI(ctx context.Context, b *bot.Bot, update *models.Update) {

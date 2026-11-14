@@ -489,52 +489,64 @@ func (c *CLI) runCleanup(args []string) error {
 func parseCleanupArgs(args []string) (cleanupOpts, error) {
 	opts := cleanupOpts{historyMonths: 3}
 	for i := 0; i < len(args); {
-		var value string
-		var next int
-		var err error
-		switch args[i] {
-		case flagFrom:
-			value, next, err = takeFlagValue(args, i, flagFrom)
-			opts.fromDate = value
-		case flagTo:
-			value, next, err = takeFlagValue(args, i, flagTo)
-			opts.toDate = value
-		case "--month":
-			value, next, err = takeFlagValue(args, i, "--month")
-			opts.month = value
-		case "--rules":
-			value, next, err = takeFlagValue(args, i, "--rules")
-			opts.rulesPath = value
-		case "--types":
-			value, next, err = takeFlagValue(args, i, "--types")
-			opts.types = splitTypes(value)
-		case "--history-months":
-			value, next, err = takeFlagValue(args, i, "--history-months")
-			if err == nil {
-				opts.historyMonths, err = strconv.Atoi(value)
-			}
-		case flagLGroup:
-			value, next, err = takeFlagValue(args, i, flagLGroup)
-			if err == nil {
-				opts.lgroup, err = strconv.Atoi(value)
-			}
-		case "--apply":
-			opts.apply = true
-			next = i + 1
-		case flagConfirm:
-			value, next, err = takeFlagValue(args, i, flagConfirm)
-			opts.confirm = value
-		case flagJSON:
-			next = i + 1
-		default:
-			return opts, fmt.Errorf("unknown flag %s", args[i])
-		}
+		next, err := opts.consume(args, i)
 		if err != nil {
 			return opts, err
 		}
 		i = next
 	}
 	return opts, nil
+}
+
+func (o *cleanupOpts) consume(args []string, i int) (int, error) {
+	switch args[i] {
+	case "--apply":
+		o.apply = true
+		return i + 1, nil
+	case flagJSON:
+		return i + 1, nil
+	}
+	name := args[i]
+	value, next, err := takeFlagValue(args, i, name)
+	if err != nil {
+		return i, err
+	}
+	if err := o.setValue(name, value); err != nil {
+		return i, err
+	}
+	return next, nil
+}
+
+func (o *cleanupOpts) setValue(name, value string) error {
+	number := func(target *int) error {
+		parsed, err := strconv.Atoi(value)
+		if err != nil {
+			return err
+		}
+		*target = parsed
+		return nil
+	}
+	switch name {
+	case flagFrom:
+		o.fromDate = value
+	case flagTo:
+		o.toDate = value
+	case "--month":
+		o.month = value
+	case "--rules":
+		o.rulesPath = value
+	case "--types":
+		o.types = splitTypes(value)
+	case "--history-months":
+		return number(&o.historyMonths)
+	case flagLGroup:
+		return number(&o.lgroup)
+	case flagConfirm:
+		o.confirm = value
+	default:
+		return fmt.Errorf("unknown flag %s", name)
+	}
+	return nil
 }
 
 func splitTypes(raw string) []string {
@@ -566,15 +578,12 @@ func (c *CLI) CleanupHistory(from, to string, types []string) error {
 }
 
 func (c *CLI) CleanupPlan(opts cleanupOpts) error {
-	if opts.month == "" || opts.rulesPath == "" || len(opts.types) == 0 {
-		return errors.New("usage: hourglass cleanup plan --month YYYY-MM --rules FILE --types type[,type] [--history-months N] [--lgroup N] [--apply --confirm TOKEN] --json")
+	if err := validateCleanupOpts(opts); err != nil {
+		return err
 	}
 	month, err := time.Parse("2006-01", opts.month)
 	if err != nil {
 		return fmt.Errorf("invalid --month %q", opts.month)
-	}
-	if opts.historyMonths < 1 {
-		return errors.New("--history-months must be at least 1")
 	}
 	rules, err := loadCleanupRules(opts.rulesPath)
 	if err != nil {
@@ -588,6 +597,20 @@ func (c *CLI) CleanupPlan(opts cleanupOpts) error {
 	if !opts.apply {
 		return c.printJSON(plan)
 	}
+	return c.applyCleanupPlan(opts, month, rules, plan)
+}
+
+func validateCleanupOpts(opts cleanupOpts) error {
+	if opts.month == "" || opts.rulesPath == "" || len(opts.types) == 0 {
+		return errors.New("usage: hourglass cleanup plan --month YYYY-MM --rules FILE --types type[,type] [--history-months N] [--lgroup N] [--apply --confirm TOKEN] --json")
+	}
+	if opts.historyMonths < 1 {
+		return errors.New("--history-months must be at least 1")
+	}
+	return nil
+}
+
+func (c *CLI) applyCleanupPlan(opts cleanupOpts, month time.Time, rules hourglass.CleanupRules, preview hourglass.CleanupPlan) error {
 	if c.getenv("HOURGLASS_ALLOW_SEND") == "1" {
 		return exitCode2("cleanup apply refused while HOURGLASS_ALLOW_SEND=1")
 	}
@@ -610,6 +633,7 @@ func (c *CLI) CleanupPlan(opts cleanupOpts) error {
 			return fmt.Errorf("failed to apply cleanup assignment: %w", err)
 		}
 	}
+	_ = preview
 	live.DryRun = false
 	live.Confirm = ""
 	return c.printJSON(live)
@@ -756,42 +780,9 @@ func (c *CLI) BootstrapFirefox(profile, tokensOut string) error {
 	if profile == "" || tokensOut == "" {
 		return errors.New("usage: hourglass auth bootstrap-firefox --profile FIREFOX_PROFILE --tokens-out FILE")
 	}
-	cookiesPath := filepath.Join(filepath.Clean(profile), "cookies.sqlite")
-	db, err := sql.Open("sqlite", "file:"+cookiesPath+"?mode=ro&immutable=1")
+	tokens, err := readFirefoxCookies(profile)
 	if err != nil {
-		return fmt.Errorf("failed to open Firefox cookies database: %w", err)
-	}
-	defer func() { _ = db.Close() }()
-	rows, err := db.Query(`SELECT name, value, expiry FROM moz_cookies WHERE host IN (?, ?) AND name IN (?, ?)`, ".app.hourglass-app.com", "app.hourglass-app.com", "hglogin", "X-Hourglass-XSRF-Token")
-	if err != nil {
-		return fmt.Errorf("failed to read Firefox cookies: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	tokens := webauthn.AuthTokens{}
-	var earliestExpiry time.Time
-	for rows.Next() {
-		var name, value string
-		var expiry int64
-		if err := rows.Scan(&name, &value, &expiry); err != nil {
-			return fmt.Errorf("failed to read Firefox cookie: %w", err)
-		}
-		expiresAt := time.Unix(expiry, 0).UTC()
-		if expiry <= 0 || !expiresAt.After(time.Now()) {
-			continue
-		}
-		if earliestExpiry.IsZero() || expiresAt.Before(earliestExpiry) {
-			earliestExpiry = expiresAt
-		}
-		switch name {
-		case "hglogin":
-			tokens.HGLogin = value
-		case "X-Hourglass-XSRF-Token":
-			tokens.XSRFToken = value
-		}
-	}
-	tokens.ExpiresAt = earliestExpiry
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("failed to read Firefox cookies: %w", err)
+		return err
 	}
 	if !tokens.IsUsable() {
 		return errors.New("firefox profile does not contain required Hourglass cookies")
@@ -801,6 +792,70 @@ func (c *CLI) BootstrapFirefox(profile, tokensOut string) error {
 	}
 	fmt.Fprintln(c.stdout, "Firefox cookies exported to token file")
 	return nil
+}
+
+// readFirefoxCookies copies the usable Hourglass cookies out of a Firefox profile.
+func readFirefoxCookies(profile string) (webauthn.AuthTokens, error) {
+	cookiesPath := filepath.Join(filepath.Clean(profile), "cookies.sqlite")
+	db, err := sql.Open("sqlite", "file:"+cookiesPath+"?mode=ro&immutable=1")
+	if err != nil {
+		return webauthn.AuthTokens{}, fmt.Errorf("failed to open Firefox cookies database: %w", err)
+	}
+	defer func() { _ = db.Close() }()
+	rows, err := db.Query(`SELECT name, value, expiry FROM moz_cookies WHERE host IN (?, ?) AND name IN (?, ?)`, ".app.hourglass-app.com", "app.hourglass-app.com", "hglogin", "X-Hourglass-XSRF-Token")
+	if err != nil {
+		return webauthn.AuthTokens{}, fmt.Errorf("failed to read Firefox cookies: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	tokens := webauthn.AuthTokens{}
+	var earliestExpiry time.Time
+	for rows.Next() {
+		name, value, expiresAt, err := scanFirefoxCookie(rows)
+		if err != nil {
+			return webauthn.AuthTokens{}, err
+		}
+		earliestExpiry = applyFirefoxCookie(&tokens, name, value, expiresAt, earliestExpiry)
+	}
+	tokens.ExpiresAt = earliestExpiry
+	if err := rows.Err(); err != nil {
+		return webauthn.AuthTokens{}, fmt.Errorf("failed to read Firefox cookies: %w", err)
+	}
+	return tokens, nil
+}
+
+// applyFirefoxCookie stores a valid cookie and returns the earliest expiry seen.
+func applyFirefoxCookie(tokens *webauthn.AuthTokens, name, value string, expiresAt, earliest time.Time) time.Time {
+	if expiresAt.IsZero() {
+		return earliest
+	}
+	if earliest.IsZero() || expiresAt.Before(earliest) {
+		earliest = expiresAt
+	}
+	switch name {
+	case "hglogin":
+		tokens.HGLogin = value
+	case "X-Hourglass-XSRF-Token":
+		tokens.XSRFToken = value
+	}
+	return earliest
+}
+
+// scanFirefoxCookie returns a zero expiry time for cookies that are already invalid.
+func scanFirefoxCookie(rows *sql.Rows) (string, string, time.Time, error) {
+	var name, value string
+	var expiry int64
+	if err := rows.Scan(&name, &value, &expiry); err != nil {
+		return "", "", time.Time{}, fmt.Errorf("failed to read Firefox cookie: %w", err)
+	}
+	if expiry <= 0 {
+		return name, value, time.Time{}, nil
+	}
+	expiresAt := time.Unix(expiry, 0).UTC()
+	if !expiresAt.After(time.Now()) {
+		return name, value, time.Time{}, nil
+	}
+	return name, value, expiresAt, nil
 }
 
 func writeTokensAtomically(path string, tokens webauthn.AuthTokens) error {
@@ -914,64 +969,60 @@ type scheduleArgs struct {
 func parseScheduleArgs(args []string) (scheduleArgs, error) {
 	var parsed scheduleArgs
 	for i := 0; i < len(args); {
-		switch args[i] {
-		case "wm", "privileges", "assign", "unassign", "check-rules", "mm", "av", "notifications", "cart":
-			parsed.subcommand = args[i]
-			i++
-			if parsed.subcommand == "cart" && i < len(args) && !strings.HasPrefix(args[i], "--") {
-				parsed.action = args[i]
-				i++
-			}
-		case "--file":
-			val, next, err := takeFlagValue(args, i, "--file")
-			if err != nil {
-				return parsed, err
-			}
-			parsed.file = val
-			i = next
-		case "--from":
-			val, next, err := takeFlagValue(args, i, "--from")
-			if err != nil {
-				return parsed, err
-			}
-			parsed.fromDate = val
-			i = next
-		case "--to":
-			val, next, err := takeFlagValue(args, i, "--to")
-			if err != nil {
-				return parsed, err
-			}
-			parsed.toDate = val
-			i = next
-		case "--lgroup":
-			val, next, err := takeFlagValue(args, i, "--lgroup")
-			if err != nil {
-				return parsed, err
-			}
-			if _, err := fmt.Sscanf(val, "%d", &parsed.lgroup); err != nil {
-				parsed.lgroup = 0
-			}
-			i = next
-		case "--type":
-			val, next, err := takeFlagValue(args, i, "--type")
-			if err != nil {
-				return parsed, err
-			}
-			parsed.notifType = val
-			i = next
-		case "--apply":
-			parsed.apply = true
-			i++
-		case "--prune":
-			parsed.prune = true
-			i++
-		case flagJSON:
-			i++
-		default:
-			i++
+		var err error
+		i, err = parsed.consume(args, i)
+		if err != nil {
+			return parsed, err
 		}
 	}
 	return parsed, nil
+}
+
+// consume reads one argument and returns the next index.
+func (s *scheduleArgs) consume(args []string, i int) (int, error) {
+	switch args[i] {
+	case "wm", "privileges", "assign", "unassign", "check-rules", "mm", "av", "notifications", "cart":
+		return s.consumeSubcommand(args, i)
+	case "--file", "--from", "--to", "--lgroup", "--type":
+		return s.consumeValueFlag(args, i)
+	case "--apply":
+		s.apply = true
+	case "--prune":
+		s.prune = true
+	}
+	return i + 1, nil
+}
+
+func (s *scheduleArgs) consumeSubcommand(args []string, i int) (int, error) {
+	s.subcommand = args[i]
+	i++
+	if s.subcommand == "cart" && i < len(args) && !strings.HasPrefix(args[i], "--") {
+		s.action = args[i]
+		i++
+	}
+	return i, nil
+}
+
+func (s *scheduleArgs) consumeValueFlag(args []string, i int) (int, error) {
+	value, next, err := takeFlagValue(args, i, args[i])
+	if err != nil {
+		return i, err
+	}
+	switch args[i] {
+	case "--file":
+		s.file = value
+	case "--from":
+		s.fromDate = value
+	case "--to":
+		s.toDate = value
+	case "--lgroup":
+		if _, err := fmt.Sscanf(value, "%d", &s.lgroup); err != nil {
+			s.lgroup = 0
+		}
+	case "--type":
+		s.notifType = value
+	}
+	return next, nil
 }
 
 func takeFlagValue(args []string, i int, name string) (string, int, error) {
@@ -992,11 +1043,7 @@ func (c *CLI) runSchedule(args []string) error {
 func (c *CLI) dispatchSchedule(parsed scheduleArgs) error {
 	switch parsed.subcommand {
 	case "wm":
-		if parsed.fromDate == "" || parsed.toDate == "" {
-			fmt.Fprintf(c.stderr, "Usage: hourglass schedule wm --from YYYY-MM-DD --to YYYY-MM-DD --json\n")
-			return errors.New("missing required --from/--to for wm")
-		}
-		return c.ScheduleWM(parsed.fromDate, parsed.toDate)
+		return c.runScheduleWMCommand(parsed)
 	case "privileges":
 		return c.Privileges()
 	case cmdAssign:
@@ -1058,19 +1105,7 @@ func (c *CLI) ImportCartSchedule(file string, apply bool) error {
 	if err != nil {
 		return err
 	}
-	// The sheet owns its months, so the comparison covers the full month even
-	// when the sheet has no rows for some of its days.
-	start, end := rows[0].Date, rows[0].Date
-	for _, row := range rows {
-		if row.Date.Before(start) {
-			start = row.Date
-		}
-		if row.Date.After(end) {
-			end = row.Date
-		}
-	}
-	start = time.Date(start.Year(), start.Month(), 1, 0, 0, 0, 0, time.UTC)
-	end = time.Date(end.Year(), end.Month()+1, 1, 0, 0, 0, 0, time.UTC).AddDate(0, 0, -1)
+	start, end := sheetMonths(rows)
 
 	locations, err := c.client.GetPWLocations()
 	if err != nil {
@@ -1123,6 +1158,14 @@ func marshalJSONTo(w io.Writer, value any) error {
 	return err
 }
 
+func (c *CLI) runScheduleWMCommand(parsed scheduleArgs) error {
+	if parsed.fromDate == "" || parsed.toDate == "" {
+		fmt.Fprintf(c.stderr, "Usage: hourglass schedule wm --from YYYY-MM-DD --to YYYY-MM-DD --json\n")
+		return errors.New("missing required --from/--to for wm")
+	}
+	return c.ScheduleWM(parsed.fromDate, parsed.toDate)
+}
+
 func (c *CLI) runCartSchedule(parsed scheduleArgs) error {
 	switch parsed.action {
 	case "import":
@@ -1142,13 +1185,13 @@ func (c *CLI) runCartSchedule(parsed scheduleArgs) error {
 // CopyCartMonth previews the target month built from the source month, keeping
 // weekday, time of day, location and publishers.
 func (c *CLI) CopyCartMonth(fromMonth, toMonth string, apply bool) error {
-	start, err := time.Parse("2006-01", fromMonth)
+	start, err := parseMonthValue(fromMonth, "--from")
 	if err != nil {
-		return exitCode2("--from must be YYYY-MM")
+		return err
 	}
-	target, err := time.Parse("2006-01", toMonth)
+	target, err := parseMonthValue(toMonth, "--to")
 	if err != nil {
-		return exitCode2("--to must be YYYY-MM")
+		return err
 	}
 	source, err := c.client.GetPWSchedule(start.Format(time.DateOnly), start.AddDate(0, 1, -1).Format(time.DateOnly))
 	if err != nil {
@@ -1160,41 +1203,14 @@ func (c *CLI) CopyCartMonth(fromMonth, toMonth string, apply bool) error {
 	}
 
 	plan := cartimport.CopyMonth(source, target, existing)
-	problems := make([]string, 0, len(plan.Problems))
-	for _, problem := range plan.Problems {
-		problems = append(problems, problem.String())
-	}
-	result := map[string]any{
-		"from":          fromMonth,
-		"to":            toMonth,
-		"source_slots":  len(source),
-		"target_before": len(existing),
-		"entries":       plan.Entries,
-		"problems":      problems,
-		"applied":       false,
-	}
-	if !apply {
-		return marshalJSONTo(c.stdout, result)
-	}
-	if len(plan.Entries) == 0 {
+	result := copyResult(fromMonth, toMonth, len(source), len(existing), plan)
+	if !apply || len(plan.Entries) == 0 {
 		return marshalJSONTo(c.stdout, result)
 	}
 
-	created := 0
-	for _, entry := range plan.Entries {
-		draft := hourglass.PWSlotDraft{
-			LocationID: entry.LocationID,
-			Datetime:   entry.Datetime.Format(time.RFC3339),
-			Duration:   fmt.Sprintf("%.2f", entry.DurationHours),
-		}
-		if entry.PublisherID != 0 {
-			publisher := entry.PublisherID
-			draft.AssigneeID = &publisher
-		}
-		if _, err := c.client.UpsertPWSlot(draft); err != nil {
-			return fmt.Errorf("falha ao gravar a %dª de %d designações: %w", created+1, len(plan.Entries), err)
-		}
-		created++
+	created, err := c.createCartEntries(plan.Entries)
+	if err != nil {
+		return fmt.Errorf("falha ao gravar a %dª de %d designações: %w", created+1, len(plan.Entries), err)
 	}
 	after, err := c.client.GetPWSchedule(target.Format(time.DateOnly), target.AddDate(0, 1, -1).Format(time.DateOnly))
 	if err != nil {
@@ -1209,13 +1225,13 @@ func (c *CLI) CopyCartMonth(fromMonth, toMonth string, apply bool) error {
 // ExportCartMonth writes the live month to a spreadsheet, one row per location
 // and hour, with up to two publishers.
 func (c *CLI) ExportCartMonth(fromMonth, toMonth, out string) error {
-	start, err := time.Parse("2006-01", fromMonth)
+	start, err := parseMonthValue(fromMonth, "--from")
 	if err != nil {
-		return exitCode2("--from must be YYYY-MM")
+		return err
 	}
-	end, err := time.Parse("2006-01", toMonth)
+	end, err := parseMonthValue(toMonth, "--to")
 	if err != nil {
-		return exitCode2("--to must be YYYY-MM")
+		return err
 	}
 	if out == "" {
 		return exitCode2("missing --file with the output path")
@@ -1242,51 +1258,18 @@ func (c *CLI) ExportCartMonth(fromMonth, toMonth, out string) error {
 // SyncCartSheet compares the spreadsheet with the live month and, with --apply,
 // creates the missing slots and deletes the ones removed from the sheet.
 func (c *CLI) SyncCartSheet(file string, apply, prune bool) error {
-	if file == "" {
-		return exitCode2("missing --file with the spreadsheet path")
-	}
-	csvPath, cleanup, err := sheetAsCSV(file)
+	rows, err := readCartSheet(file)
 	if err != nil {
 		return err
 	}
-	defer cleanup()
-
-	source, err := os.Open(csvPath)
+	desired, problems, err := c.desiredFromSheet(rows)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = source.Close() }()
-
-	rows, err := cartimport.Parse(source)
+	live, err := c.liveCartSlots(sheetMonths(rows))
 	if err != nil {
 		return err
 	}
-	// The sheet owns its months, so the comparison covers the full month even
-	// when the sheet has no rows for some of its days.
-	start, end := rows[0].Date, rows[0].Date
-	for _, row := range rows {
-		if row.Date.Before(start) {
-			start = row.Date
-		}
-		if row.Date.After(end) {
-			end = row.Date
-		}
-	}
-	start = time.Date(start.Year(), start.Month(), 1, 0, 0, 0, 0, time.UTC)
-	end = time.Date(end.Year(), end.Month()+1, 1, 0, 0, 0, 0, time.UTC).AddDate(0, 0, -1)
-	locations, err := c.client.GetPWLocations()
-	if err != nil {
-		return err
-	}
-	users, err := c.client.GetUsers()
-	if err != nil {
-		return err
-	}
-	live, err := c.client.GetPWSchedule(start.Format(time.DateOnly), end.Format(time.DateOnly))
-	if err != nil {
-		return err
-	}
-	desired, problems := cartimport.Desired(rows, locations, users)
 	diff := cartimport.Compare(desired, live)
 	result := map[string]any{
 		"create":   len(diff.Create),
@@ -1298,7 +1281,92 @@ func (c *CLI) SyncCartSheet(file string, apply, prune bool) error {
 	if !apply || diff.IsEmpty() {
 		return marshalJSONTo(c.stdout, result)
 	}
-	for _, entry := range diff.Create {
+	if err := c.applyCartDiff(diff, prune); err != nil {
+		return err
+	}
+	result["applied"] = true
+	return marshalJSONTo(c.stdout, result)
+}
+
+// parseMonthValue reads a YYYY-MM flag and reports it with the flag name.
+func parseMonthValue(value, flag string) (time.Time, error) {
+	month, err := time.Parse("2006-01", value)
+	if err != nil {
+		return time.Time{}, exitCode2(flag + " must be YYYY-MM")
+	}
+	return month, nil
+}
+
+func copyResult(fromMonth, toMonth string, sourceSlots, targetBefore int, plan cartimport.Plan) map[string]any {
+	problems := make([]string, 0, len(plan.Problems))
+	for _, problem := range plan.Problems {
+		problems = append(problems, problem.String())
+	}
+	return map[string]any{
+		"from":          fromMonth,
+		"to":            toMonth,
+		"source_slots":  sourceSlots,
+		"target_before": targetBefore,
+		"entries":       plan.Entries,
+		"problems":      problems,
+		"applied":       false,
+	}
+}
+
+func readCartSheet(file string) ([]cartimport.Row, error) {
+	if file == "" {
+		return nil, exitCode2("missing --file with the spreadsheet path")
+	}
+	csvPath, cleanup, err := sheetAsCSV(file)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+	source, err := os.Open(csvPath)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = source.Close() }()
+	return cartimport.Parse(source)
+}
+
+// sheetMonths returns the first and last day of the months the sheet touches.
+func sheetMonths(rows []cartimport.Row) (time.Time, time.Time) {
+	start, end := rows[0].Date, rows[0].Date
+	for _, row := range rows {
+		if row.Date.Before(start) {
+			start = row.Date
+		}
+		if row.Date.After(end) {
+			end = row.Date
+		}
+	}
+	start = time.Date(start.Year(), start.Month(), 1, 0, 0, 0, 0, time.UTC)
+	end = time.Date(end.Year(), end.Month()+1, 1, 0, 0, 0, 0, time.UTC).AddDate(0, 0, -1)
+	return start, end
+}
+
+func (c *CLI) desiredFromSheet(rows []cartimport.Row) ([]cartimport.Entry, []cartimport.Problem, error) {
+	locations, err := c.client.GetPWLocations()
+	if err != nil {
+		return nil, nil, err
+	}
+	users, err := c.client.GetUsers()
+	if err != nil {
+		return nil, nil, err
+	}
+	desired, problems := cartimport.Desired(rows, locations, users)
+	return desired, problems, nil
+}
+
+func (c *CLI) liveCartSlots(start, end time.Time) ([]hourglass.PWSlot, error) {
+	return c.client.GetPWSchedule(start.Format(time.DateOnly), end.Format(time.DateOnly))
+}
+
+// createCartEntries writes the entries in order and returns how many were created.
+func (c *CLI) createCartEntries(entries []cartimport.Entry) (int, error) {
+	created := 0
+	for _, entry := range entries {
 		draft := hourglass.PWSlotDraft{
 			LocationID: entry.LocationID,
 			Datetime:   entry.Datetime.Format(time.RFC3339),
@@ -1309,18 +1377,26 @@ func (c *CLI) SyncCartSheet(file string, apply, prune bool) error {
 			draft.AssigneeID = &publisher
 		}
 		if _, err := c.client.UpsertPWSlot(draft); err != nil {
-			return fmt.Errorf("falha ao criar designação: %w", err)
+			return created, err
+		}
+		created++
+	}
+	return created, nil
+}
+
+func (c *CLI) applyCartDiff(diff cartimport.MonthDiff, prune bool) error {
+	if _, err := c.createCartEntries(diff.Create); err != nil {
+		return fmt.Errorf("falha ao criar designação: %w", err)
+	}
+	if !prune {
+		return nil
+	}
+	for _, slot := range diff.Delete {
+		if err := c.client.DeletePWSlot(slot.ID); err != nil {
+			return fmt.Errorf("falha ao remover designação: %w", err)
 		}
 	}
-	if prune {
-		for _, slot := range diff.Delete {
-			if err := c.client.DeletePWSlot(slot.ID); err != nil {
-				return fmt.Errorf("falha ao remover designação: %w", err)
-			}
-		}
-	}
-	result["applied"] = true
-	return marshalJSONTo(c.stdout, result)
+	return nil
 }
 
 func writeSheet(path string, rows []cartimport.ExportRow) error {

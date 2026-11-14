@@ -164,30 +164,36 @@ func (a *browserAuthAdapter) WithProfileDir(profileDir string) browserAuthentica
 	return &browserAuthAdapter{BrowserAuth: browserAuth.WithProfileDir(profileDir)}
 }
 
-func (ts *tokenSaverImpl) run() error {
-	fmt.Println("🌐 Autenticação Hourglass + Salvamento de Tokens")
-	fmt.Println("⏱️  Você tem 5 minutos para completar a autenticação")
-	fmt.Println("👁️  A janela do Chrome será visível")
-	fmt.Println()
-
+// prepareDirectories creates the private config and browser profile folders.
+func (ts *tokenSaverImpl) prepareDirectories() (string, string, string, error) {
 	homeDir, err := ts.userHomeDir()
 	if err != nil {
-		return fmt.Errorf("failed to get home directory: %w", err)
+		return "", "", "", fmt.Errorf("failed to get home directory: %w", err)
 	}
-
 	configDir := filepath.Join(homeDir, defaultConfigDirName)
-
-	if err := ts.mkdirAll(configDir, 0700); err != nil {
-		return fmt.Errorf("failed to create config directory: %w", err)
+	if err := ts.mkdirAll(configDir, 0o700); err != nil {
+		return "", "", "", fmt.Errorf("failed to create config directory: %w", err)
 	}
-
 	tokensPath := filepath.Join(configDir, authTokensFileName)
 	profileDir := os.Getenv("CHROME_PROFILE_DIR")
 	if profileDir == "" {
 		profileDir = filepath.Join(configDir, "chrome-profile")
 	}
 	if err := ts.mkdirAll(profileDir, 0o700); err != nil {
-		return fmt.Errorf("failed to create chrome profile directory: %w", err)
+		return "", "", "", fmt.Errorf("failed to create chrome profile directory: %w", err)
+	}
+	return configDir, tokensPath, profileDir, nil
+}
+
+func (ts *tokenSaverImpl) run() error {
+	fmt.Println("🌐 Autenticação Hourglass + Salvamento de Tokens")
+	fmt.Println("⏱️  Você tem 5 minutos para completar a autenticação")
+	fmt.Println("👁️  A janela do Chrome será visível")
+	fmt.Println()
+
+	configDir, tokensPath, profileDir, err := ts.prepareDirectories()
+	if err != nil {
+		return err
 	}
 
 	fmt.Printf("💾 Tokens serão salvos em: %s\n", tokensPath)
