@@ -278,14 +278,14 @@ Remoções só acontecem com `--prune`; sem essa flag o comando apenas cria e at
 
 A planilha tem as colunas `local,data,inicio,fim,publicador1,publicador2`, com horários iguais aos do Hourglass (ex.: 05:45, 08:00, 16:00). Planilhas `.xlsx` são convertidas pelo LibreOffice, então `soffice` precisa estar instalado.
 
-Para manter a planilha sincronizada, use o script `scripts/cart-sync.sh` (instalado em `~/.local/bin/hourglass-cart-sync`) com um timer do sistema:
+A sincronização é **manual**. Não instale timer para ela: o script `scripts/cart-sync.sh` (instalado em `~/.local/bin/hourglass-cart-sync`) só roda quando chamado com a planilha:
 
 ```bash
-systemctl --user enable --now hourglass-cart-sync.timer   # roda a cada 10 minutos
-tail -f ~/.local/state/hourglass-cart-sync.log            # uma linha JSON por execução
+hourglass-cart-sync ~/Documents/hourglass/dezembro.xlsx
+tail -n 1 ~/.local/state/hourglass-cart-sync.log   # uma linha JSON por execução
 ```
 
-O script não faz nada se a planilha não existir e nunca chama endpoint de envio, portanto nenhuma notificação sai para os publicadores.
+O script falha com mensagem clara se o arquivo não existir e nunca chama endpoint de envio, portanto nenhuma notificação sai para os publicadores. O timer `hourglass-cart-sync.timer` foi desativado em 2026-11-14; não o reative sem pedido explícito do proprietário.
 
 ### Programação de carrinho por planilha
 

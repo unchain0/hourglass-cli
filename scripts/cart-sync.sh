@@ -1,14 +1,14 @@
 #!/bin/sh
-# Apply the cart spreadsheet to Hourglass. Intended for a timer: it is quiet
-# when nothing changed and appends one JSON line per run to the log.
+# Apply a cart spreadsheet to Hourglass on demand. Manual only: do not install
+# a timer for this script. Usage: hourglass-cart-sync [file.xlsx]
 set -eu
 
 CLI="${HOURGLASS_CLI:-$HOME/.local/bin/hourglass-cli}"
-SHEET="${HOURGLASS_CART_SHEET:-$HOME/Documents/hourglass/programacao-carrinho-dezembro-2026.xlsx}"
+SHEET="${1:-${HOURGLASS_CART_SHEET:-$HOME/Documents/hourglass/programacao-carrinho-dezembro-2026.xlsx}}"
 LOG="${HOURGLASS_CART_LOG:-$HOME/.local/state/hourglass-cart-sync.log}"
 
 [ -x "$CLI" ] || { echo "hourglass cli not found at $CLI" >&2; exit 1; }
-[ -f "$SHEET" ] || exit 0
+[ -f "$SHEET" ] || { echo "spreadsheet not found: $SHEET" >&2; exit 1; }
 
 TOKENS_PATH="${TOKENS_PATH:-$HOME/.hourglass-rpa/auth-tokens.json}"
 WEBAUTHN_TOKENS_PATH="${WEBAUTHN_TOKENS_PATH:-$TOKENS_PATH}"
